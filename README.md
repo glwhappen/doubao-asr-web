@@ -10,7 +10,7 @@
 - ✏️ **会学你的纠正**：点句子直接改，改法记住并影响后续识别
 - 🔒 **数据不出本机浏览器**：转写与词库都存 `localStorage`，多人共用一份部署也互不覆盖
 - 🧩 **可集成**：服务端是标准 WebSocket，附 Python / Node / Go 三份最小客户端
-- 🗣️ **说话人分离**（可选）：多人对话时给每句标「谁说的」，可给说话人改名；本地模型，离线可用
+- 🗣️ **说话人分离**（可选）：多人对话时**边录边给每句标「谁说的」**，可给说话人改名；本地模型，离线可用
 - 🌗 **亮/暗主题**、🛟 **离线兜底**（云端不可用时自动切本地 FunASR）
 
 > ⚠️ **先看免责声明**：本项目调用的是豆包输入法客户端内部的**未公开接口**，仅供技术研究与个人自用。
@@ -155,7 +155,10 @@ AudioWorklet 采集 16k/mono/PCM16
 | `DOUBAO_LOCAL_ENGINE` + `DOUBAO_LOCAL_ENGINE_TOKEN` | 空 | 本地兜底引擎（FunASR `asr-engine`）；配了才会启用降级 |
 | `DOUBAO_LOG_LEVEL` / `DOUBAO_DEBUG_WIRE` | `INFO` / `0` | 日志级别 / dump 上游字节（排查用） |
 | `DOUBAO_DIAR_DIR` | `./models` | 说话人分离模型目录 |
-| `DOUBAO_DIAR_THRESHOLD` | `0.7` | 聚类阈值（越小越容易并成一个人） |
+| `DOUBAO_DIAR_MODE` | `online` | `online` 边录边标 / `batch` 收尾整段算 / `both` 两者 |
+| `DOUBAO_DIAR_THRESHOLD` | `0.7` | 整段聚类阈值（越小越容易并成一个人） |
+| `DOUBAO_DIAR_ONLINE_THRESHOLD` | `0.4` | 在线追踪的余弦阈值 |
+| `DOUBAO_DIAR_ONLINE_MIN` | `0.6` | 短于这个秒数的句子不做声纹，继承上一位 |
 | `DOUBAO_DIAR_MIN_ON` / `MIN_OFF` | `0.3` / `0.5` | 分割片段的最短/最短间隔 |
 | `DOUBAO_DIAR_MAX_SECONDS` | `600` | 超过这个时长就跳过分离，防卡死 |
 
@@ -248,8 +251,11 @@ WantedBy=multi-user.target
 
 ## 说话人分离（可选）
 
-上游 ASR **不支持**说话人分离（结果里没有 speaker 字段），所以这一步在我们这边做：
-会话结束后对整段录音跑一次本地分离模型，再把结果按「时间重叠最多」贴到每一句上。
+上游 ASR **不支持**说话人分离（结果里没有 speaker 字段），所以这一步在我们这边做。
+
+**默认是"边录边标"**（`DOUBAO_DIAR_MODE=online`）：每句一定稿，就从这一段音频里提一次声纹
+（3D-Speaker，约 50ms），和已有说话人的中心向量比余弦相似度 —— 够像就归他，否则新建一位。
+所以标签是**实时出现**的，不用等录音结束。
 
 方案和 [screenpipe](https://github.com/screenpipe/screenpipe) 一致 ——
 **pyannote 分割模型 + 3D-Speaker 声纹 + 聚类**（sherpa-onnx 的 `OfflineSpeakerDiarization`，同一套配方）：
@@ -262,22 +268,26 @@ WantedBy=multi-user.target
 ./tools/fetch_diarization_models.sh          # → ./models/{segmentation,embedding}.onnx
 ```
 
-页面上勾选「**区分说话人**」即可（偏好存在本机）。结束录音后会多花几秒做分离，
-每句前面出现「说话人 1 / 说话人 2」彩色标签，**点标签可以改名**（比如改成「李总」），
+页面上勾选「**区分说话人**」即可（偏好存在本机）。说完一句、那句话定稿后，
+前面就会出现「说话人 1 / 说话人 2」彩色标签；**点标签可以改名**（比如改成「李总」），
 改名后导出的 TXT/SRT/JSON 里也用这个名字。
 
 实测数据（32 核 CPU，单进程）：
 
 | 项 | 值 |
 |---|---|
-| 速度 | 19.3s 音频约 8s（≈2.4× 实时），只在收尾时跑一次 |
+| 速度（online，默认） | 每句约 50ms，实时出标签，停止时不用等 |
+| 速度（batch 整段模式） | 19.3s 音频约 8s（≈2.4× 实时），停止时才出标签 |
 | 模型 | pyannote segmentation-3.0（6 MB）+ 3D-Speaker ERes2Net（38 MB） |
 | 效果 | 中文女声 + 英文男声混在一起 → 正确分成 2 人；单人录音 → 只有 1 人 |
-| 阈值 | `DOUBAO_DIAR_THRESHOLD` 默认 **0.7**（0.5 会把同一人的尾巴拆成「第三个人」，0.9 会把两个人合并） |
+| 阈值 | 整段聚类 `DOUBAO_DIAR_THRESHOLD` 默认 **0.7**；在线追踪 `DOUBAO_DIAR_ONLINE_THRESHOLD` 默认 **0.4**（实测同人 0.36~0.79、不同人 ≈ -0.09） |
 
-**局限（先说清楚）**：不做重叠语音（两人同时说话归给其中一人）；聚类是整段批处理，
-所以只能**录音结束后**出标签，做不到边说边分；说话人编号只在这一次录音内有意义，
-跨录音不会自动认出「还是刚才那个人」（要做声纹库得自己存 embedding）。
+**局限（先说清楚）**：不做重叠语音（两人同时说话归给其中一人）；在线追踪是"逐句独立判断"，
+所以说话人编号只在这一次录音内有意义，跨录音不会自动认出「还是刚才那个人」
+（要做声纹库得自己把 embedding 存下来比对）；太短的句子（<0.6s）算不出可靠声纹，会继承上一位说话人。
+
+想换成"录完整段再算"（更准、但要等）：`DOUBAO_DIAR_MODE=batch`；
+`both` = 先实时出、收尾再用整段结果校正。
 
 关掉它：页面取消勾选，或服务端不装模型（`/health` 会报 `diarization.available=false`，页面上该选项自动禁用）。
 

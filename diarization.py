@@ -35,6 +35,10 @@ MIN_DURATION_OFF = float(os.environ.get("DOUBAO_DIAR_MIN_OFF", "0.5"))
 MAX_SECONDS = float(os.environ.get("DOUBAO_DIAR_MAX_SECONDS", "600"))  # 超过就跳过，防卡死
 # 这一句和所有分离片段都无重叠时，允许用「最近的说话人」补标签的最大时间距离（秒）
 FILL_GAP_SECONDS = float(os.environ.get("DOUBAO_DIAR_FILL_GAP", "10"))
+# 在线追踪：每句定稿时算声纹，与已有说话人的余弦相似度 ≥ 此值就归他，否则新建一位
+ONLINE_THRESHOLD = float(os.environ.get("DOUBAO_DIAR_ONLINE_THRESHOLD", "0.4"))
+# 太短的句子算出的声纹不可靠，直接继承上一位说话人
+ONLINE_MIN_SECONDS = float(os.environ.get("DOUBAO_DIAR_ONLINE_MIN", "0.6"))
 MIN_SPEAKER_SECONDS = float(os.environ.get("DOUBAO_DIAR_MIN_SPEAKER_SECONDS", "1.0"))  # 短于此的簇会被并掉
 
 
@@ -218,3 +222,99 @@ def pcm_to_wav_bytes(pcm: bytes, sample_rate: int = 16000) -> bytes:
         wav.setframerate(sample_rate)
         wav.writeframes(pcm)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------- 在线追踪（边录边出标签）
+
+class SpeakerTracker:
+    """在线说话人追踪：每定稿一句就算一次声纹，和已有说话人比相似度。
+
+    批处理分离（Diarizer）只能等录完，所以录音过程中一直没有标签；这个类解决"边录边出标签"：
+    逐句提取 3D-Speaker 声纹 → 与每位说话人的中心向量求余弦 → 够像就归他，否则新建一位。
+    录音结束后仍会用整段分离跑一遍做校正（通常更准）。
+    """
+
+    def __init__(self, threshold: float = ONLINE_THRESHOLD):
+        self.threshold = threshold
+        self._extractor = None
+        self._failed = False
+        self.centroids: list[tuple[int, "object"]] = []   # [(speaker, 归一化向量)]
+        self.last_speaker: int | None = None
+        self.seen: dict[tuple, int] = {}                   # (start,end) -> speaker，避免重复算
+
+    def available(self) -> bool:
+        if self._extractor is not None:
+            return True
+        if self._failed or not EMB_MODEL.exists():
+            return False
+        try:
+            import sherpa_onnx  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    def _load(self):
+        if self._extractor is None:
+            import sherpa_onnx
+            self._extractor = sherpa_onnx.SpeakerEmbeddingExtractor(
+                sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(EMB_MODEL)))
+        return self._extractor
+
+    def _embed(self, samples):
+        import numpy as np
+        stream = self._extractor.create_stream()
+        stream.accept_waveform(16000, samples)
+        stream.input_finished()
+        vec = np.array(self._extractor.compute(stream), dtype="float32")
+        norm = float((vec ** 2).sum()) ** 0.5
+        return vec / (norm + 1e-9) if norm else None
+
+    def assign(self, pcm: bytes, start: float | None, end: float | None) -> int | None:
+        """给 [start,end] 这段音频定一个说话人编号（1 起）；算不出就返回上一位或 None。"""
+        import numpy as np
+
+        if start is None or end is None or end - start < ONLINE_MIN_SECONDS:
+            return self.last_speaker
+        key = (round(float(start), 1), round(float(end), 1))
+        if key in self.seen:
+            return self.seen[key]
+        if not self.available():
+            return None
+
+        begin = max(0, int(start * 16000))
+        finish = min(len(pcm) // 2, int(end * 16000))
+        if finish - begin < 16000 * ONLINE_MIN_SECONDS:
+            return self.last_speaker
+        try:
+            self._load()
+            samples = np.frombuffer(pcm[begin * 2:finish * 2], dtype="int16").astype("float32") / 32768.0
+            vec = self._embed(samples)
+        except Exception:                     # noqa: BLE001
+            self._failed = True
+            log.exception("在线声纹提取失败，本次录音不再追踪说话人")
+            return self.last_speaker
+        if vec is None:
+            return self.last_speaker
+
+        best, best_sim = None, -1.0
+        for speaker, centroid in self.centroids:
+            sim = float(np.dot(vec, centroid))
+            if sim > best_sim:
+                best, best_sim = speaker, sim
+        if best is not None and best_sim >= self.threshold:
+            speaker = best
+            for i, (spk, centroid) in enumerate(self.centroids):   # 中心向量做一点平滑
+                if spk == speaker:
+                    merged = 0.8 * centroid + 0.2 * vec
+                    self.centroids[i] = (spk, merged / (float((merged ** 2).sum()) ** 0.5 + 1e-9))
+        else:
+            speaker = len(self.centroids) + 1
+            self.centroids.append((speaker, vec))
+            log.info("在线跟踪：新增说话人 %d（最像的只有 %.2f）", speaker, best_sim)
+        self.seen[key] = speaker
+        self.last_speaker = speaker
+        return speaker
+
+    @property
+    def count(self) -> int:
+        return len(self.centroids)

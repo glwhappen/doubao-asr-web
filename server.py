@@ -31,7 +31,7 @@ import urllib.request
 
 import httpx
 import websockets
-from diarization import FILL_GAP_SECONDS, DIARIZER, assign_speakers
+from diarization import FILL_GAP_SECONDS, DIARIZER, SpeakerTracker, assign_speakers
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -67,6 +67,8 @@ HISTORY_BYTES = 5 * 60 * SAMPLE_RATE * 2   # 降级补喂用的 PCM 缓冲上限
 MAX_SESSIONS = int(os.environ.get("DOUBAO_MAX_SESSIONS", "3"))
 CLOUD_MAX_RETRY = int(os.environ.get("DOUBAO_CLOUD_RETRY", "2"))   # 云端抖动时的重连次数
 DEBUG_WIRE = os.environ.get("DOUBAO_DEBUG_WIRE", "0") == "1"
+# 说话人标签怎么算：online=每句定稿立刻算（实时出标签，默认）；batch=收尾整段算；both=先实时再整段校正
+DIAR_MODE = os.environ.get("DOUBAO_DIAR_MODE", "online").lower()
 GITHUB_URL = os.environ.get("DOUBAO_GITHUB_URL", "https://github.com/glwhappen/doubao-asr-web")
 TOKEN_TTL = 12 * 3600
 PUNCT = "。！？!?；;…\n"
@@ -1004,7 +1006,19 @@ async def transcribe_socket(ws: WebSocket):
         def public(lines):
             return [{k: v for k, v in line.items() if not k.startswith("_")} for line in lines]
 
+        async def label_speakers(lines):
+            """在线追踪：句子一定稿就立刻算声纹、跟已有说话人比，实时把标签贴上。"""
+            if tracker is None or not nonlocal_diarize[0]:
+                return
+            for line in lines:
+                if line.get("final") and not line.get("spk"):
+                    spk = await asyncio.to_thread(tracker.assign, bytes(history), line.get("start"), line.get("end"))
+                    if spk:
+                        line["spk"] = spk
+                        log.info("在线说话人：%.1f-%.1fs → 说话人 %s", line.get("start") or 0, line.get("end") or 0, spk)
+
         async def emit(lines):
+            await label_speakers(lines)
             try:
                 await ws.send_json({"type": "update", "engine": engine, "lines": public(lines),
                                     "text": "\n".join(l["text"] for l in lines if l.get("text"))})
@@ -1015,7 +1029,7 @@ async def transcribe_socket(ws: WebSocket):
         # 服务端只在本次会话里用，用完即弃 —— 这样多人同时用不会互相覆盖。
         session_lexicon = Lexicon()
         early_audio = []
-        want_diarize = False
+        tracker = SpeakerTracker() if DIAR_MODE in ("online", "both") and DIARIZER.available() else None
 
         nonlocal_diarize = [False]          # read_config 里改，主流程里读
 
@@ -1070,6 +1084,8 @@ async def transcribe_socket(ws: WebSocket):
                 engine = "local"
             await ws.send_json({"type": "status", "engine": engine,
                                 "message": "本地引擎已就绪，开始说话" if engine == "local" else "已就绪，开始说话"})
+            if nonlocal_diarize[0] and tracker is None and DIAR_MODE in ("online", "both"):
+                await ws.send_json({"type": "status", "message": "说话人分离模型不可用（见 tools/fetch_diarization_models.sh）"})
             for chunk in early_audio:                # 比 config 先到的那点音频
                 await feed_pcm(chunk)
 
@@ -1117,12 +1133,15 @@ async def transcribe_socket(ws: WebSocket):
                             await session.push(pending, 1 if not sent_first else 9)
                             pending = None
                         lines, error = await session.finish()
+                        # finish() 会重建行对象，实时阶段贴的标签会丢，这里按时间区间重新贴一遍
+                        # （追踪器按 (start,end) 缓存，不会重复算声纹）
+                        await label_speakers(lines)
                         received = len(history) / (SAMPLE_RATE * 2)
                         last_end = max((l.get("end") or 0) for l in lines) if lines else 0
                         log.info("会话收尾：收到 %.1fs 音频，上游认到 %.1fs（%d 句，跨度差 %.1fs）",
                                  received, last_end, len(lines), received - last_end)
-                        speakers = 0
-                        if nonlocal_diarize[0]:
+                        speakers = tracker.count if tracker else 0
+                        if nonlocal_diarize[0] and DIAR_MODE in ("batch", "both"):
                             if DIARIZER.available():
                                 await ws.send_json({"type": "status", "message": "正在区分说话人（本地模型）…"})
                                 segments = await asyncio.to_thread(DIARIZER.diarize, bytes(history))
@@ -1132,6 +1151,8 @@ async def transcribe_socket(ws: WebSocket):
                                     error = error or "没听出多个人（或音频太短），本次未区分说话人"
                             else:
                                 error = error or "未安装说话人分离模型，跳过（见 tools/fetch_diarization_models.sh）"
+                        elif nonlocal_diarize[0] and not DIARIZER.available():
+                            error = error or "未安装说话人分离模型，跳过（见 tools/fetch_diarization_models.sh）"
                         await ws.send_json({"type": "final", "engine": engine, "lines": public(lines),
                                             "text": "\n".join(l["text"] for l in lines if l.get("text")),
                                             "speakers": speakers, "error": error,
@@ -1170,7 +1191,7 @@ async def health():
         "app_key_ready": bool(creds.get("app_key")),
         "max_sessions": MAX_SESSIONS,
         "aid": AID,
-        "diarization": DIARIZER.status(),
+        "diarization": {**DIARIZER.status(), "mode": DIAR_MODE},
     }
 
 

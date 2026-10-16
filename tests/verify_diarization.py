@@ -34,6 +34,8 @@ async def main():
     pcm = build_two_speaker_pcm()
     print(f"测试音频 {len(pcm) / 32000:.1f}s（中文女声 + 静音 + 英文男声）")
     final = None
+    live_labeled = []          # 录音过程中（还没点停止）就带上标签的句子
+    streaming = True
     async with websockets.connect(f"ws://{HOST}:{PORT}/ws?engine=auto", max_size=None, open_timeout=30) as ws:
         await ws.send(json.dumps({"type": "config", "lexicon": {}, "diarize": True}))
 
@@ -43,6 +45,10 @@ async def main():
                 msg = json.loads(await ws.recv())
                 if msg.get("type") == "status" and "说话人" in (msg.get("message") or ""):
                     print("  服务端:", msg["message"])
+                if msg.get("type") == "update" and streaming:
+                    for line in msg.get("lines") or []:
+                        if line.get("spk") and line.get("final"):
+                            live_labeled.append((line.get("spk"), (line.get("text") or "")[:20]))
                 if msg.get("type") in ("final", "error"):
                     final = msg
                     return
@@ -51,18 +57,21 @@ async def main():
         for i in range(0, len(pcm), 640):
             await ws.send(pcm[i:i + 640])
             await asyncio.sleep(0.02)
+        streaming = False          # 从这一刻起不再是"录音过程中"
         await ws.send(json.dumps({"type": "stop"}))
         await asyncio.wait_for(task, timeout=180)
 
     assert final and final.get("type") == "final", f"没拿到最终结果: {final}"
     lines = final.get("lines") or []
-    print(f"\n识别 {len(lines)} 句，speakers={final.get('speakers')}")
+    print(f"\n录音过程中就拿到标签的句子：{live_labeled[:3]}{' …' if len(live_labeled) > 3 else ''}（共 {len(live_labeled)} 句）")
+    print(f"识别 {len(lines)} 句，speakers={final.get('speakers')}")
     for line in lines:
         print(f"   spk={line.get('spk')}  {line.get('start')}-{line.get('end')}s  {line.get('text')[:40]}")
     labels = [l.get("spk") for l in lines if l.get("spk")]
     assert labels, "没有任何句子带上说话人标签"
     assert len(set(labels)) >= 2, f"应该分出至少 2 个人，实际 {sorted(set(labels))}"
-    print("\n✅ 通过：说话人分离生效，不同人拿到了不同标签")
+    assert live_labeled, "录音过程中没有任何句子拿到标签（实时追踪没生效）"
+    print("\n✅ 通过：说话人标签实时生效，且不同人拿到了不同标签")
 
 
 if __name__ == "__main__":
