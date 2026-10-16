@@ -36,12 +36,61 @@ MAX_SECONDS = float(os.environ.get("DOUBAO_DIAR_MAX_SECONDS", "600"))  # 超过�
 # 这一句和所有分离片段都无重叠时，允许用「最近的说话人」补标签的最大时间距离（秒）
 FILL_GAP_SECONDS = float(os.environ.get("DOUBAO_DIAR_FILL_GAP", "10"))
 # 在线追踪：每句定稿时算声纹，与已有说话人的余弦相似度 ≥ 此值就归他，否则新建一位
-ONLINE_THRESHOLD = float(os.environ.get("DOUBAO_DIAR_ONLINE_THRESHOLD", "0.4"))
+ONLINE_THRESHOLD = float(os.environ.get("DOUBAO_DIAR_ONLINE_THRESHOLD", "0.5"))
 # 太短的句子算出的声纹不可靠，直接继承上一位说话人
 ONLINE_MIN_SECONDS = float(os.environ.get("DOUBAO_DIAR_ONLINE_MIN", "0.6"))
-# 与"声纹库"里已注册的人比对时的阈值：比会话内聚类更严一点，避免认错人
-GALLERY_THRESHOLD = float(os.environ.get("DOUBAO_DIAR_GALLERY_THRESHOLD", "0.45"))
+# 与"声纹库"里已注册的人比对时的阈值。
+# 依据（CAM++ zh_en 实测）：同人最低 0.72、异人最高 0.05 → 0.5 很安全。
+GALLERY_THRESHOLD = float(os.environ.get("DOUBAO_DIAR_GALLERY_THRESHOLD", "0.5"))
 MIN_SPEAKER_SECONDS = float(os.environ.get("DOUBAO_DIAR_MIN_SPEAKER_SECONDS", "1.0"))  # 短于此的簇会被并掉
+
+
+_EXTRACTOR = None
+_EXTRACTOR_FAILED = False
+
+
+def extractor():
+    """全局复用一个声纹提取器（约 30MB 内存）。"""
+    global _EXTRACTOR, _EXTRACTOR_FAILED
+    if _EXTRACTOR is not None or _EXTRACTOR_FAILED:
+        return _EXTRACTOR
+    if not EMB_MODEL.exists():
+        _EXTRACTOR_FAILED = True
+        return None
+    try:
+        import sherpa_onnx
+        _EXTRACTOR = sherpa_onnx.SpeakerEmbeddingExtractor(
+            sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(EMB_MODEL)))
+        log.info("声纹模型已加载：%s（%d 维）", EMB_MODEL.name, _EXTRACTOR.dim)
+    except Exception:                            # noqa: BLE001
+        _EXTRACTOR_FAILED = True
+        log.exception("声纹模型加载失败")
+    return _EXTRACTOR
+
+
+def embedding_dim() -> int:
+    ex = extractor()
+    return int(ex.dim) if ex is not None else 0
+
+
+def extract_embedding(pcm: bytes):
+    """一段 16k/单声道/PCM16 → 归一化声纹向量（list）；不可用返回 None。"""
+    import numpy as np
+
+    ex = extractor()
+    if ex is None or len(pcm) < 16000 * 0.3:      # 太短算不出可靠声纹
+        return None
+    try:
+        samples = np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype="int16").astype("float32") / 32768.0
+        stream = ex.create_stream()
+        stream.accept_waveform(16000, samples)
+        stream.input_finished()
+        vec = np.array(ex.compute(stream), dtype="float32")
+        norm = float((vec ** 2).sum()) ** 0.5
+        return [round(float(x), 4) for x in (vec / (norm + 1e-9))]
+    except Exception:                            # noqa: BLE001
+        log.exception("声纹提取失败")
+        return None
 
 
 @dataclass
@@ -236,34 +285,59 @@ class SpeakerTracker:
     录音结束后仍会用整段分离跑一遍做校正（通常更准）。
     """
 
-    def __init__(self, threshold: float = ONLINE_THRESHOLD, gallery=None):
+    def __init__(self, threshold: float = ONLINE_THRESHOLD, gallery=None, dim: int | None = None):
         self.threshold = threshold
         self._extractor = None
         self._failed = False
         self.centroids: list[tuple[int, "object"]] = []   # [(speaker, 归一化向量)]
         self.last_speaker: int | None = None
         self.seen: dict[tuple, tuple] = {}                 # (start,end) -> (speaker, name)
-        # 声纹库：[(姓名, 归一化向量)]，由浏览器本地保存、每次会话开始发过来
-        self.gallery: list[tuple[str, "object"]] = []
-        self.name_to_speaker: dict[str, int] = {}
+        # 声纹库：一个人可以挂多例声纹（说得越多越稳），检索时取"和该人最像的那一例"。
+        # 维度不匹配的旧声纹（换过模型）会被跳过并计数。
+        self.gallery: dict[str, list] = {}
+        self.name_to_speaker: dict[str, int] = {}     # 认出来的人 → 本次会话的编号
+        self.gallery_info = {"names": 0, "added": 0, "skipped": 0, "dim": dim or 0}
         for item in (gallery or []):
-            self.add_voiceprint(item.get("name"), item.get("vector"))
+            self.add_voiceprint(item.get("name"), item.get("vectors") or item.get("vector"))
 
-    def add_voiceprint(self, name, vector):
-        """把一个已注册的声纹加进来（向量可以是 list，也可以是 numpy 数组）。"""
+    def add_voiceprint(self, name, vectors, replace: bool = True):
+        """注册一个人的声纹，支持一次给多例：vectors 是 [[...], [...]] 或单个向量。
+
+        注意：numpy 数组不能直接做真假判断，也不要把标量当向量——统一用 np.asarray
+        规整成二维再处理。
+        """
         import numpy as np
-        if not name or vector is None:          # 注意：numpy 数组不能直接做真假判断
+
+        if not name or vectors is None:
             return False
         try:
-            vec = np.asarray(vector, dtype="float32").ravel()
+            arr = np.asarray(vectors, dtype="float32")
         except (TypeError, ValueError):
             return False
-        if vec.size < 8:
+        if arr.size == 0:
             return False
-        norm = float((vec ** 2).sum()) ** 0.5
-        if not norm:
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        expected = self.gallery_info.get("dim") or None
+        good = []
+        for vector in arr:
+            vector = vector.ravel()
+            if vector.size < 8 or (expected and vector.size != expected):
+                self.gallery_info["skipped"] += 1      # 太短或维度不匹配（换过模型）
+                continue
+            norm = float((vector ** 2).sum()) ** 0.5
+            if not norm:
+                self.gallery_info["skipped"] += 1
+                continue
+            good.append(vector / norm)
+        if not good:
             return False
-        self.gallery.append((str(name), vec / norm))
+        if replace or name not in self.gallery:
+            self.gallery[name] = good
+        else:
+            self.gallery[name].extend(good)
+        self.gallery_info["names"] = len(self.gallery)
+        self.gallery_info["added"] += len(good)
         return True
 
     def available(self) -> bool:
@@ -337,16 +411,17 @@ class SpeakerTracker:
         """
         import numpy as np
 
-        name, name_sim = None, -1.0
-        for candidate, centroid in self.gallery:
-            sim = float(np.dot(vec, centroid))
+        # 声纹库检索：对每个人取"最像的那一例"，谁最高、且过阈值就是谁
+        name, name_sim = "", -1.0
+        for candidate, examples in self.gallery.items():
+            sim = max(float(np.dot(vec, ex)) for ex in examples)
             if sim > name_sim:
                 name, name_sim = candidate, sim
-        if name is not None and name_sim >= GALLERY_THRESHOLD:
+        if name and name_sim >= GALLERY_THRESHOLD:
             speaker = self.name_to_speaker.get(name)
             if speaker is None:
                 speaker = len(self.centroids) + 1
-                self.centroids.append((speaker, vec))
+                self.centroids.append((speaker, vec))       # 本次会话里也给他一个编号
                 self.name_to_speaker[name] = speaker
             log.info("声纹识别：认得「%s」（相似度 %.2f）", name, name_sim)
             return speaker, name

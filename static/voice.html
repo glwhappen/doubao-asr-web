@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>声纹管理 · 豆包输入法语音转文字</title>
+<script src="/static/theme.js"></script>
+<style>
+  :root{
+    --bg:#f3f6fc; --bg-grad:#e6edfb; --card:#ffffff; --line:#dfe5f0;
+    --fg:#1b2333; --dim:#66748c; --dim2:#8494ab;
+    --accent:#2f6bff; --ok:#0f9d6a; --warn:#c07a12; --err:#d64545;
+    --btn:#eef2f9; --btn-hover:#e2e9f6; --btn-border:#dfe5f0;
+    --chip:#eaf0fb; --chip-fg:#2554b8; --input:#f6f8fc; --row:#f9fbfe;
+    --meter:#e6ebf4; --rec:#e04545; --ph:#98a5ba; --ok-bg:rgba(15,157,106,.10);
+  }
+  :root[data-theme="dark"]{
+    --bg:#0b0e14; --bg-grad:#1b2740; --card:#141922; --line:#232a36;
+    --fg:#e8ecf3; --dim:#8b98ad; --dim2:#6f7d92;
+    --accent:#4f8cff; --ok:#3ddc97; --warn:#ffb84d; --err:#ff6b6b;
+    --btn:#1d2634; --btn-hover:#243043; --btn-border:#2f3d52;
+    --chip:#182033; --chip-fg:#bcd0ff; --input:#0f1622; --row:#111722;
+    --meter:#1d2634; --rec:#e04545; --ph:#5b6779; --ok-bg:rgba(61,220,151,.12);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 50% -20%,var(--bg-grad) 0%,var(--bg) 60%);
+       color:var(--fg);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       min-height:100vh;display:flex;flex-direction:column;align-items:center}
+  header{padding:26px 20px 6px;text-align:center}
+  h1{margin:0;font-size:22px}
+  header p{margin:6px 0 0;color:var(--dim);font-size:13px}
+  main{width:min(860px,95vw);flex:1;display:flex;flex-direction:column;gap:14px;padding:14px 0 40px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;
+        box-shadow:0 1px 2px rgba(20,32,60,.04)}
+  h2{margin:0 0 6px;font-size:17px}
+  p,li{color:var(--fg)}
+  .hint{color:var(--dim);font-size:12.5px;line-height:1.75;margin-top:8px}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  button{font:inherit;color:var(--fg);background:var(--btn);border:1px solid var(--btn-border);border-radius:11px;
+         padding:9px 15px;cursor:pointer;transition:.15s;font-size:15px}
+  button:hover{background:var(--btn-hover)} button:disabled{opacity:.45;cursor:not-allowed}
+  button.sm{padding:6px 12px;font-size:13px;border-radius:9px}
+  #rec{min-width:150px;font-weight:600;background:var(--accent);border-color:var(--accent);color:#fff}
+  #rec.on{background:var(--rec);border-color:var(--rec)}
+  input[type=text]{flex:1;min-width:180px;background:var(--input);border:1px solid var(--line);border-radius:10px;
+        color:var(--fg);padding:9px 12px;font:inherit;font-size:15px;outline:none}
+  input[type=text]:focus{border-color:var(--accent)}
+  #meter{height:6px;border-radius:3px;background:var(--meter);overflow:hidden;flex:1;min-width:110px}
+  #meter i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--ok),var(--accent));transition:width .08s}
+  .status{color:var(--dim);font-size:13px}
+  .samples{display:flex;flex-direction:column;gap:6px;margin-top:12px}
+  .sample{display:flex;align-items:center;gap:10px;font-size:13.5px;background:var(--row);
+          border:1px solid var(--line);border-radius:10px;padding:7px 11px}
+  .sample .n{color:var(--dim);font:12px ui-monospace,Menlo,monospace}
+  .sample .q{margin-left:auto;font-size:12px;color:var(--ok)}
+  .sample .q.bad{color:var(--warn)}
+  .sample .x{cursor:pointer;color:var(--dim);border:0;background:none;padding:0 4px;font-size:15px}
+  .sample .x:hover{color:var(--err)}
+  .vplist{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+  .vp{display:flex;align-items:center;gap:10px;background:var(--row);border:1px solid var(--line);
+      border-radius:12px;padding:10px 12px}
+  .vp b{font-size:15px}
+  .vp .meta{color:var(--dim);font-size:12px}
+  .vp .sp{flex:1}
+  .vp .d{cursor:pointer;color:var(--dim);border:0;background:none;font-size:16px;padding:0 4px}
+  .vp .d:hover{color:var(--err)}
+  .badge{display:inline-block;font-size:11px;border-radius:999px;padding:1px 9px;border:1px solid var(--line);color:var(--dim)}
+  .badge.ok{color:var(--ok);border-color:rgba(15,157,106,.4);background:var(--ok-bg)}
+  .mono{font:12px/1.5 ui-monospace,Menlo,monospace;color:var(--dim2)}
+  .headrow{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:10px}
+  .doclink{display:inline-block;font-size:13.5px;background:var(--chip);border:1px solid var(--line);
+           border-radius:999px;padding:5px 14px;color:var(--accent)}
+  .ghlink{display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:5px 13px;border-radius:999px;
+          background:var(--card);border:1px solid var(--line);color:var(--fg)}
+  .ghlink:hover{border-color:var(--accent);color:var(--accent)}
+  #themeToggle{font-size:13px;padding:5px 13px;border-radius:999px;background:var(--card);border:1px solid var(--line)}
+  .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--btn);
+         border:1px solid var(--btn-border);color:var(--fg);padding:10px 16px;border-radius:10px;font-size:13px;
+         opacity:0;pointer-events:none;transition:.25s}
+  .toast.show{opacity:1}
+  footer{color:var(--dim);font-size:12px;padding:0 20px 26px;text-align:center;max-width:860px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🎤 声纹管理</h1>
+  <p>念几段话，把一个人的声音注册进本机声纹库；以后录音时就能自动标出他是谁</p>
+  <p class="headrow">
+    <a class="doclink" href="/">← 回到录音页</a>
+    <button id="themeToggle" data-theme-toggle></button>
+    <a class="ghlink" href="__GITHUB_URL__" target="_blank" rel="noopener" title="在 GitHub 上查看源码">
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      GitHub</a>
+  </p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>① 新建 / 补充一个人的声纹</h2>
+    <div class="row">
+      <input type="text" id="name" list="names" placeholder="这个人叫什么？（比如：郭力玮、李总）">
+      <datalist id="names"></datalist>
+      <button id="rec">开始录一段</button>
+      <div id="meter"><i></i></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span class="status" id="status">输入名字后点「开始录一段」，念 1~2 句话（3 秒左右），再点一次结束。</span>
+    </div>
+    <div class="samples" id="samples"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="save" disabled>保存到本机声纹库</button>
+      <button class="sm" id="clearTemp">清空本次录制</button>
+      <span class="hint" style="margin:0">建议：<b>3 段</b>不同内容（比如"今天天气不错""我下周一出差""帮我订个会议室"），每段 2~4 秒。相似度越高越稳。</span>
+    </div>
+    <div class="hint">
+      声纹只存在你这台浏览器（<span class="mono">localStorage</span>），不上传保存；服务端只在提取时算一次。<br>
+      想更稳：每段念不同的内容、别太快、别离麦克风太远；同一段话重复念反而帮助不大。
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>② 本机已注册的声纹 <span class="badge" id="count">0 人</span></h2>
+    <div class="vplist" id="vplist"></div>
+    <div class="hint" id="modelinfo">正在读取模型信息…</div>
+  </section>
+</main>
+
+<footer>
+  供技术研究与自用 · 声纹属生物特征，本项目<b>只存本机浏览器</b>，服务器不保存任何音频或声纹。
+</footer>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const LS_VOICEPRINTS = 'doubao-asr-voiceprints';
+const statusEl = $('status'), meter = $('meter').firstElementChild;
+
+let samples = [];          // 本次录制的样本：[{vector, seconds, rms}]
+let ws = null, audioCtx = null, node = null, stream = null, source = null, gain = null;
+let recording = false, chunks = [], modelDim = 0;
+
+function toast(msg) {
+  const el = $('toast'); el.textContent = msg; el.classList.add('show');
+  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2200);
+}
+function setStatus(text) { statusEl.textContent = text; }
+
+// ---------------------------------------------------------------- 本机声纹库
+
+function loadVoiceprints() {
+  let list = [];
+  try { list = JSON.parse(localStorage.getItem(LS_VOICEPRINTS)) || []; } catch (_) { list = []; }
+  // 兼容旧格式 {name, vector} → {name, vectors: [...]}
+  return list.map((v) => ({
+    name: v.name,
+    vectors: v.vectors || (v.vector ? [v.vector] : []),
+    dim: v.dim || (v.vector ? v.vector.length : (v.vectors ? v.vectors[0].length : 0)),
+    created_at: v.created_at || Date.now(),
+  })).filter((v) => v.name && v.vectors.length);
+}
+function saveVoiceprints(list) {
+  try { localStorage.setItem(LS_VOICEPRINTS, JSON.stringify(list)); return true; }
+  catch (_) { toast('浏览器存不下了（localStorage 已满）'); return false; }
+}
+function renderList() {
+  const list = loadVoiceprints();
+  $('count').textContent = `${list.length} 人`;
+  const box = $('vplist');
+  box.innerHTML = '';
+  $('names').innerHTML = list.map((v) => `<option value="${v.name}">`).join('');
+  if (!list.length) {
+    box.innerHTML = '<div class="hint" style="margin:0">还没有注册任何人的声纹。</div>';
+    return;
+  }
+  list.forEach((vp, i) => {
+    const el = document.createElement('div');
+    el.className = 'vp';
+    const name = document.createElement('b'); name.textContent = vp.name;
+    const meta = document.createElement('span'); meta.className = 'meta';
+    meta.textContent = `${vp.vectors.length} 例 · ${vp.dim} 维 · ${new Date(vp.created_at).toLocaleDateString()}`;
+    const sp = document.createElement('span'); sp.className = 'sp';
+    const add = document.createElement('button'); add.className = 'sm'; add.textContent = '+ 补录一段';
+    add.title = '用这个名字再录一段，声音越多越稳';
+    add.onclick = () => { $('name').value = vp.name; setStatus(`要补充「${vp.name}」的声纹：点「开始录一段」再念一段即可，录完点保存。`); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+    const del = document.createElement('button'); del.className = 'd'; del.textContent = '✕'; del.title = '删除这个声纹';
+    del.onclick = () => {
+      if (!confirm(`删除「${vp.name}」的声纹？`)) return;
+      const next = loadVoiceprints(); next.splice(i, 1); saveVoiceprints(next); renderList(); toast('已删除');
+    };
+    el.append(name, meta, sp, add, del);
+    box.appendChild(el);
+  });
+}
+
+// ---------------------------------------------------------------- 录音
+
+async function startRec() {
+  chunks = [];
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+  });
+  audioCtx = new AudioContext({ sampleRate: 16000 });
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  await audioCtx.audioWorklet.addModule('/static/worklet.js');
+  source = audioCtx.createMediaStreamSource(stream);
+  node = new AudioWorkletNode(audioCtx, 'pcm16', { processorOptions: { targetRate: 16000 } });
+  gain = audioCtx.createGain(); gain.gain.value = 0;
+  source.connect(node); node.connect(gain); gain.connect(audioCtx.destination);
+  node.port.onmessage = (ev) => {
+    if (ev.data.peak !== undefined) {
+      meter.style.width = Math.min(100, Math.round(ev.data.peak * 130)) + '%';
+      return;
+    }
+    chunks.push(new Uint8Array(ev.data.pcm));
+  };
+  recording = true;
+  $('rec').textContent = '结束这一句'; $('rec').classList.add('on');
+  setStatus('正在录… 念 1~2 句话（2~4 秒）后点「结束这一句」');
+}
+
+async function stopRec() {
+  recording = false;
+  $('rec').textContent = '开始录一段'; $('rec').classList.remove('on');
+  meter.style.width = '0%';
+  try { if (node) node.port.onmessage = null; } catch (_) {}
+  try { source.disconnect(); node.disconnect(); gain.disconnect(); } catch (_) {}
+  try { stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+  try { await audioCtx.close(); } catch (_) {}
+  ws = audioCtx = node = source = gain = stream = null;
+
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  if (total < 16000) { setStatus(`这段只有 ${(total / 32000).toFixed(1)} 秒，太短了，重录一段吧`); return; }
+  const pcm = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { pcm.set(c, off); off += c.length; }
+  chunks = [];
+
+  setStatus('正在提取声纹…');
+  try {
+    const resp = await fetch('/api/voiceprint', { method: 'POST', body: pcm });
+    const data = await resp.json();
+    if (!data.ok) { setStatus(`提取失败：${data.message}`); return; }
+    if (modelDim && data.dim !== modelDim) { toast(`模型维度变了（${modelDim}→${data.dim}），请重新注册`); }
+    modelDim = data.dim;
+    samples.push(data);
+    renderSamples();
+    setStatus(`已录第 ${samples.length} 段（${data.seconds}s，质量 ${qualityText(data.quality)}）${samples.length >= 3 ? '，可以保存了' : '，建议再录 1~2 段'}`);
+  } catch (err) {
+    setStatus('提取失败：' + err.message);
+  }
+}
+
+function qualityText(q) {
+  return { ok: '好', short: '偏短（建议 ≥2 秒）', quiet: '声音偏小' }[q] || q;
+}
+function cos(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+function meanVector(list) {
+  const out = new Array(list[0].length).fill(0);
+  for (const v of list) for (let i = 0; i < v.length; i++) out[i] += v[i] / list.length;
+  return out;
+}
+
+function renderSamples() {
+  const box = $('samples');
+  box.innerHTML = '';
+  samples.forEach((s, i) => {
+    const el = document.createElement('div');
+    el.className = 'sample';
+    const n = document.createElement('span'); n.className = 'n'; n.textContent = `第 ${i + 1} 段`;
+    const t = document.createElement('span'); t.textContent = `${s.seconds}s`;
+    const q = document.createElement('span');
+    if (i > 0) {
+      const sim = cos(s.vector, meanVector(samples.slice(0, i).map((x) => x.vector)));
+      q.className = 'q' + (sim < 0.5 ? ' bad' : '');
+      q.textContent = `与前几段一致性 ${sim.toFixed(2)}${sim < 0.5 ? '（偏低，建议重录）' : ' ✓'}`;
+    } else {
+      q.className = 'q';
+      q.textContent = `质量 ${qualityText(s.quality)}`;
+    }
+    const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕'; x.title = '删掉这段';
+    x.onclick = () => { samples.splice(i, 1); renderSamples(); };
+    el.append(n, t, q, x);
+    box.appendChild(el);
+  });
+  $('save').disabled = samples.length === 0;
+}
+
+// ---------------------------------------------------------------- 保存
+
+$('save').onclick = () => {
+  const name = $('name').value.trim();
+  if (!name) { toast('先填名字'); $('name').focus(); return; }
+  const list = loadVoiceprints();
+  const existing = list.find((v) => v.name === name);
+  const vectors = samples.map((s) => s.vector);
+  if (existing) {
+    existing.vectors = existing.vectors.concat(vectors);      // 补录：累加
+    existing.dim = modelDim || existing.dim;
+  } else {
+    list.unshift({ name, vectors, dim: modelDim || vectors[0].length, created_at: Date.now() });
+  }
+  if (!saveVoiceprints(list)) return;
+  samples = []; renderSamples(); $('name').value = '';
+  renderList();
+  toast(`已保存「${name}」的声纹（共 ${existing ? existing.vectors.length : vectors.length} 例）`);
+  setStatus('已保存。可以继续录下一个人，或回录音页试试认人效果。');
+};
+
+$('clearTemp').onclick = () => { samples = []; renderSamples(); setStatus('已清空本次录制。'); };
+$('rec').onclick = async () => {
+  $('rec').disabled = true;
+  try { recording ? await stopRec() : await startRec(); }
+  catch (err) { setStatus('麦克风出错：' + err.message); recording = false; $('rec').textContent = '开始录一段'; }
+  finally { $('rec').disabled = false; }
+};
+
+// ---------------------------------------------------------------- 初始化
+
+renderList();
+renderSamples();
+fetch('/health').then((r) => r.json()).then((j) => {
+  const d = j.diarization || {};
+  modelDim = d.embedding_dim || 0;
+  $('modelinfo').innerHTML = d.available
+    ? `服务端声纹模型：<b>可用</b>（${modelDim} 维，识别阈值 ${d.gallery_threshold}）。注册后回<a href="/">录音页</a>勾选「区分说话人」即可自动认人。`
+    : `服务端声纹模型<b>不可用</b>：先跑 <span class="mono">tools/fetch_diarization_models.sh</span> 下载模型。`;
+}).catch(() => { $('modelinfo').textContent = '读不到服务端状态。'; });
+</script>
+</body>
+</html>

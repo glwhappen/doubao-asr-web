@@ -66,13 +66,14 @@ async def main():
     first = await run(pcm, None, "第一遍：不注册声纹")
     vectors = first.get("speaker_vectors") or {}
     assert len(vectors) >= 2, f"应该给出至少 2 个人的声纹向量，实际 {list(vectors)}"
-    assert all(len(v) == 512 for v in vectors.values()), "声纹向量维度不对"
+    dims = {len(v) for v in vectors.values()}
+    assert len(dims) == 1 and dims.pop() >= 64, f"声纹向量维度不对：{dims}"
     print(f"   → 拿到 {len(vectors)} 条声纹（每条 {len(next(iter(vectors.values())))} 维）")
 
     # 把中文女声那位注册成「甲」
     target_spk = (first["lines"][0].get("spk"))
     assert target_spk is not None, "第一句没有说话人标签"
-    gallery = [{"name": "甲", "vector": vectors[str(target_spk)]}]
+    gallery = [{"name": "甲", "vectors": [vectors[str(target_spk)]]}]
     second = await run(pcm, gallery, "第二遍：带上声纹库（甲）")
 
     lines = second.get("lines") or []

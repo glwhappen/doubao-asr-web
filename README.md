@@ -11,7 +11,8 @@
 - 🔒 **数据不出本机浏览器**：转写与词库都存 `localStorage`，多人共用一份部署也互不覆盖
 - 🧩 **可集成**：服务端是标准 WebSocket，附 Python / Node / Go 三份最小客户端
 - 🗣️ **说话人分离 + 声纹库**（可选）：多人对话时**边录边给每句标「谁说的」**；
-  注册过声音的人以后**自动认出来并用真名标注**（跨录音有效，声纹只存本机）
+  有独立的 [**声纹管理页**](http://127.0.0.1:4416/voice)（`/voice`）——念几段话就注册一个人，
+  以后录音**自动认出他并标真名**（跨录音有效，声纹只存本机）
 - 🌗 **亮/暗主题**、🛟 **离线兜底**（云端不可用时自动切本地 FunASR）
 
 > ⚠️ **先看免责声明**：本项目调用的是豆包输入法客户端内部的**未公开接口**，仅供技术研究与个人自用。
@@ -131,7 +132,7 @@ AudioWorklet 采集 16k/mono/PCM16
 | 数据 | 位置 | 行为 |
 |---|---|---|
 | 转写内容（含时间戳） | `localStorage['doubao-asr-transcript']` | 每次识别追加，插入每次录音的时间分隔线；只有点「清空」才删 |
-| 声纹库 | `localStorage['doubao-asr-voiceprints']` | 已注册的说话人姓名 + 512 维声纹；用于跨录音自动认人 |
+| 声纹库 | `localStorage['doubao-asr-voiceprints']` | 已注册的人：姓名 + 多例声纹向量（CAM++ 192 维）；用于跨录音自动认人 |
 | 纠正词典 + 热词 | `localStorage['doubao-asr-lexicon']` | 点句子改字即学会；面板可删单条/清空 |
 | 主题偏好 | `localStorage['doubao-asr-theme']` | 亮 / 暗 |
 
@@ -156,12 +157,12 @@ AudioWorklet 采集 16k/mono/PCM16
 | `DOUBAO_CREDS` | `.creds.json` | 设备凭据缓存位置 |
 | `DOUBAO_LOCAL_ENGINE` + `DOUBAO_LOCAL_ENGINE_TOKEN` | 空 | 本地兜底引擎（FunASR `asr-engine`）；配了才会启用降级 |
 | `DOUBAO_LOG_LEVEL` / `DOUBAO_DEBUG_WIRE` | `INFO` / `0` | 日志级别 / dump 上游字节（排查用） |
-| `DOUBAO_DIAR_DIR` | `./models` | 说话人分离模型目录 |
+| `DOUBAO_DIAR_DIR` | `./models` | 说话人分离/声纹模型目录（pyannote 分割 + CAM++ 声纹） |
 | `DOUBAO_DIAR_MODE` | `online` | `online` 边录边标 / `batch` 收尾整段算 / `both` 两者 |
 | `DOUBAO_DIAR_THRESHOLD` | `0.7` | 整段聚类阈值（越小越容易并成一个人） |
-| `DOUBAO_DIAR_ONLINE_THRESHOLD` | `0.4` | 在线追踪的余弦阈值 |
+| `DOUBAO_DIAR_ONLINE_THRESHOLD` | `0.5` | 在线追踪的余弦阈值 |
 | `DOUBAO_DIAR_ONLINE_MIN` | `0.6` | 短于这个秒数的句子不做声纹，继承上一位 |
-| `DOUBAO_DIAR_GALLERY_THRESHOLD` | `0.45` | 与声纹库比对时的余弦阈值（比会话内聚类更严） |
+| `DOUBAO_DIAR_GALLERY_THRESHOLD` | `0.5` | 与声纹库比对时的余弦阈值（CAM++ 实测：同人 ≥0.72、异人 ≤0.05） |
 | `DOUBAO_DIAR_MIN_ON` / `MIN_OFF` | `0.3` / `0.5` | 分割片段的最短/最短间隔 |
 | `DOUBAO_DIAR_MAX_SECONDS` | `600` | 超过这个时长就跳过分离，防卡死 |
 
@@ -174,7 +175,9 @@ AudioWorklet 采集 16k/mono/PCM16
 | `GET /` | 录音页面 |
 | `GET /how` | 原理与复刻指南（公式：下载地址、包结构、协议表、三语言示例、集成方式、离线方案） |
 | `WS /ws?engine=auto\|cloud\|local` | 转写会话；`auto` = 云端优先，失败自动降级本地引擎 |
-| `GET /health` | 状态、并发、上游凭据是否就绪 |
+| `GET /voice` | **声纹管理页**：念几段话注册/补录/删除声纹 |
+| `POST /api/voiceprint` | 裸 PCM（或整个 wav 文件）→ 返回声纹向量 + 时长/质量；服务端不留存 |
+| `GET /health` | 状态、并发、上游凭据、声纹模型维度与阈值 |
 
 ### WebSocket 协议
 

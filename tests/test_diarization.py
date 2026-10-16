@@ -116,6 +116,23 @@ class VoiceprintCase(unittest.TestCase):
         self.assertFalse(self.tracker.add_voiceprint("", self.vec(1, 0, 0, 0, 0, 0, 0, 0)))
         self.assertEqual(self.tracker.count, 0)
 
+    def test_multi_example_bank_matches_best_example(self):
+        """一个名字挂多例时，取"和他最像的那一例"判断（说得多→更难认错）。"""
+        far = self.vec(1, 0, 0, 0, 0, 0, 0, 0)
+        near = self.vec(0, 1, 0, 0, 0, 0, 0, 0)
+        self.tracker.add_voiceprint("甲", [far, near])
+        spk, name = self.tracker.match_vector(self.vec(0.04, 0.99, 0, 0, 0, 0, 0, 0))
+        self.assertEqual(name, "甲")
+        self.assertEqual(self.tracker.gallery_info["added"], 2)
+
+    def test_dim_mismatch_is_skipped(self):
+        """换过声纹模型后，旧维度（512 维）的声纹要被跳过，而不是硬用。"""
+        tracker = diarization.SpeakerTracker(dim=8)
+        self.assertTrue(tracker.add_voiceprint("甲", self.vec(1, 0, 0, 0, 0, 0, 0, 0)))
+        self.assertFalse(tracker.add_voiceprint("乙", [0.1] * 192))   # 旧模型的 512/192 维
+        self.assertEqual(tracker.gallery_info["skipped"], 1)
+        self.assertEqual(list(tracker.gallery), ["甲"])
+
     def test_vectors_exports_centroids(self):
         self.tracker.match_vector(self.vec(1, 0, 0, 0, 0, 0, 0, 0))
         vectors = self.tracker.vectors()

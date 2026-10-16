@@ -198,6 +198,7 @@
 
   <div class="utility">
     <a class="doclink" href="/how" target="_blank" rel="noopener">📖 原理与复刻指南（下载地址 / 协议 / Python·Node·Go 示例 / 离线方案）</a>
+    <a class="doclink" href="/voice" target="_blank" rel="noopener">🎤 声纹管理（念几段话，以后自动认人）</a>
     <button id="themeToggle" data-theme-toggle></button>
     <a class="ghlink" href="__GITHUB_URL__" target="_blank" rel="noopener" title="在 GitHub 上查看源码"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span>GitHub</span></a>
   </div>
@@ -221,7 +222,7 @@ const LS_LEXICON = 'doubao-asr-lexicon';        // { corrections: [...], hotword
 const LS_TRANSCRIPT = 'doubao-asr-transcript';  // { version:1, entries: [...] }
 const LS_DIARIZE = 'doubao-asr-diarize';        // '1' / '0'
 const LS_SPEAKERS = 'doubao-asr-speaker-names'; // { "1": "张三", ... }
-const LS_VOICEPRINTS = 'doubao-asr-voiceprints'; // [{ name, vector:[512 个数] }]
+const LS_VOICEPRINTS = 'doubao-asr-voiceprints'; // [{ name, vectors:[[...192 个数]], dim }]
 const MAX_ENTRIES = 3000;                       // 太多就丢最早的（防 localStorage 撑爆）
 
 const store = {
@@ -267,14 +268,15 @@ function renderVoiceprints() {
   if (!voiceprints.length) {
     const d = document.createElement('div');
     d.className = 'lexempty';
-    d.textContent = '还没有注册声纹：录完一次后点「说话人 N」标签，起个名字并勾选"记住这个声音"，以后就能自动认出来。';
+    d.innerHTML = '还没有注册声纹：可以点上面「说话人 N」标签保存，或去 <a href="/voice" target="_blank">声纹管理</a> 专门念几段话注册（更准）。';
     box.appendChild(d);
   }
   voiceprints.forEach((vp, i) => {
     const row = document.createElement('div');
     row.className = 'lexrow';
     const n = document.createElement('span'); n.className = 'r'; n.textContent = vp.name;
-    const dim = document.createElement('span'); dim.className = 'cnt'; dim.textContent = `${(vp.vector || []).length} 维声纹`;
+    const dim = document.createElement('span'); dim.className = 'cnt';
+    dim.textContent = `${(vp.vectors || (vp.vector ? [vp.vector] : [])).length} 例声纹`;
     const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕'; x.title = '删除这个声纹';
     x.onclick = () => { voiceprints.splice(i, 1); saveVoiceprints(); };
     row.append(n, dim, x);
@@ -382,9 +384,10 @@ function render() {
         try { localStorage.setItem(LS_SPEAKERS, JSON.stringify(speakerNames)); } catch (_) {}
         // 有这段录音的声纹数据时，问一句要不要"记住这个声音"
         const vector = sessionVectors[String(l.spk)];
-        if (clean && vector && confirm(`要把「${clean}」的声音存进本机声纹库吗？\n\n存了以后，这个人的声音在以后的录音里会自动被认出来（只存在你这台浏览器）。`)) {
-          voiceprints = voiceprints.filter((v) => v.name !== clean);
-          voiceprints.unshift({ name: clean, vector });
+        if (clean && vector && confirm(`要把「${clean}」的声音存进本机声纹库吗？\n\n存了以后，这个人的声音在以后的录音里会自动被认出来（只存在你这台浏览器）。\n\n想录得更准，可去「声纹管理」页专门念几段话。`)) {
+          const found = voiceprints.find((v) => v.name === clean);
+          if (found) found.vectors = (found.vectors || []).concat([vector]);
+          else voiceprints.unshift({ name: clean, vectors: [vector] });
           saveVoiceprints();
           toast(`已记住「${clean}」的声音`);
         }

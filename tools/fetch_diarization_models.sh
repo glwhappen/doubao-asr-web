@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 用途: 下载说话人分离用的两个 ONNX 模型（pyannote 分割 + 3D-Speaker 声纹）到 ./models
+# 用途: 下载说话人分离/声纹用的两个 ONNX 模型（pyannote 分割 + CAM++ 中英声纹）到 ./models
 # 用法: ./tools/fetch_diarization_models.sh [目标目录]
 # 入参: $1 目标目录（默认 <项目>/models）
 # 出参: 目录下 segmentation.onnx / embedding.onnx；echo 进度；退出码 0 成功 / 1 失败
@@ -15,14 +15,15 @@ SEG_URLS=(
   "https://hf-mirror.com/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx"
   "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
 )
+# 声纹模型换过：ERes2Net-zh（中文专用，38MB）→ CAM++ zh_en（中英双语，28MB，实测可分性 0.31→0.67）
 EMB_URLS=(
-  "https://hf-mirror.com/csukuangfj/speaker-embedding-models/resolve/main/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
-  "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
+  "https://hf-mirror.com/csukuangfj/speaker-embedding-models/resolve/main/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+  "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
 )
 
 # 期望大小（字节）：下完必须对上，否则就是被截断了
 SEG_SIZE=5992913
-EMB_SIZE=39593761
+EMB_SIZE=28281164
 
 fetch() {
   local out="$1" want="$2"; shift 2

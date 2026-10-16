@@ -31,8 +31,9 @@ import urllib.request
 
 import httpx
 import websockets
-from diarization import FILL_GAP_SECONDS, DIARIZER, SpeakerTracker, assign_speakers
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from diarization import (FILL_GAP_SECONDS, DIARIZER, GALLERY_THRESHOLD, SpeakerTracker,
+                         assign_speakers, embedding_dim, extract_embedding)
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -1034,7 +1035,8 @@ async def transcribe_socket(ws: WebSocket):
         session_lexicon = Lexicon()
         early_audio = []
         gallery = []                      # 浏览器本地保存的声纹库，进来后填
-        tracker = SpeakerTracker() if DIAR_MODE in ("online", "both") and DIARIZER.available() else None
+        tracker = (SpeakerTracker(dim=embedding_dim() or None)
+                   if DIAR_MODE in ("online", "both") and DIARIZER.available() else None)
 
         nonlocal_diarize = [False]          # read_config 里改，主流程里读
 
@@ -1058,8 +1060,9 @@ async def transcribe_socket(ws: WebSocket):
                         nonlocal_diarize[0] = bool(command.get("diarize"))
                         gallery = command.get("voiceprints") or []
                         if tracker is not None and gallery:
-                            added = sum(1 for item in gallery if tracker.add_voiceprint(item.get("name"), item.get("vector")))
-                            log.info("加载本机声纹库：%d 条（有效 %d 条）", len(gallery), added)
+                            for item in gallery:
+                                tracker.add_voiceprint(item.get("name"), item.get("vectors") or item.get("vector"))
+                            log.info("加载本机声纹库：%s", tracker.gallery_info)
                         session_lexicon.data = Lexicon.from_payload(command.get("lexicon") or {}).data
                         log.info("会话词库：%d 条纠正 / %d 个热词", len(session_lexicon.data["corrections"]),
                                  len(session_lexicon.data["hotwords"]))
@@ -1203,7 +1206,9 @@ async def health():
         "app_key_ready": bool(creds.get("app_key")),
         "max_sessions": MAX_SESSIONS,
         "aid": AID,
-        "diarization": {**DIARIZER.status(), "mode": DIAR_MODE},
+        "diarization": {**DIARIZER.status(), "mode": DIAR_MODE,
+                        "embedding_dim": embedding_dim(),
+                        "gallery_threshold": GALLERY_THRESHOLD},
     }
 
 
@@ -1248,6 +1253,50 @@ def render_page(path: Path) -> HTMLResponse:
     """把静态页里的 __GITHUB_URL__ 换成配置的仓库地址（改地址只需改一个环境变量）。"""
     html = path.read_text(encoding="utf-8").replace("__GITHUB_URL__", GITHUB_URL)
     return HTMLResponse(html)
+
+
+@app.post("/api/voiceprint")
+async def make_voiceprint(request: Request):
+    """把一段录音（16k/单声道/PCM16，裸字节）抽成一个声纹向量。
+
+    供"声纹管理"页使用：用户在页面上念几段话 → 每段调一次这个接口 → 存进浏览器本机声纹库。
+    服务端不留存任何音频与声纹。
+    """
+    pcm = await request.body()
+    if pcm[:4] == b"RIFF":                       # 容错：直接 POST 一个 wav 文件也能用
+        idx = pcm.find(b"data")
+        pcm = pcm[idx + 8:] if idx > 0 else pcm[44:]
+    seconds = len(pcm) / (SAMPLE_RATE * 2)
+    if not pcm:
+        return JSONResponse({"ok": False, "message": "没有收到音频"}, status_code=400)
+    if seconds < 0.5:
+        return JSONResponse({"ok": False, "message": f"太短了（{seconds:.1f}s），至少录 1 秒"}, status_code=400)
+
+    import array
+    samples = array.array("h")
+    samples.frombytes(pcm[: len(pcm) // 2 * 2])
+    rms = (sum(float(x) * x for x in samples) / max(1, len(samples))) ** 0.5 / 32768.0
+
+    vector = await asyncio.to_thread(extract_embedding, pcm)
+    if not vector:
+        return JSONResponse({"ok": False, "message": "声纹模型不可用或提取失败（见 tools/fetch_diarization_models.sh）"},
+                            status_code=503)
+    quality = "ok"
+    if seconds < 1.5:
+        quality = "short"          # 还是能用，但建议 2 秒以上
+    if rms < 0.005:
+        quality = "quiet"          # 声音太小，声纹不稳
+    return {"ok": True, "vector": vector, "dim": len(vector),
+            "seconds": round(seconds, 2), "rms": round(rms, 4), "quality": quality}
+
+
+@app.get("/voice")
+async def voice_manager():
+    """声纹管理页。"""
+    page = STATIC / "voice.html"
+    if not page.exists():
+        return JSONResponse({"error": "缺少 static/voice.html"}, status_code=404)
+    return render_page(page)
 
 
 @app.get("/")
