@@ -1,0 +1,18 @@
+# 凭据 / 隐私：绝不能提交
+.creds.json
+.env
+lexicon.json
+
+# 运行环境
+venv/
+__pycache__/
+*.pyc
+.runtime/
+*.log
+
+# 前端依赖
+node_modules/
+examples/package-lock.json
+
+# 本机测试产物
+tests/.cache/

@@ -1,0 +1,1570 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>原理与复刻指南 · 豆包输入法语音识别</title>
+<script src="/static/theme.js"></script>
+<style>
+  /* 亮色（默认） */
+  :root{
+    --bg:#f5f8fc; --card:#ffffff; --line:#e1e8f3; --fg:#1b2333; --dim:#66748c;
+    --accent:#2f6bff; --ok:#0f9d6a; --warn:#b4761a; --err:#d64545;
+    --text:#3a465e; --head4:#3a465e;
+    --code:#f4f7fc; --code-fg:#20406e; --diag-fg:#2b5fa8;
+    --th-bg:#eef3fb; --th-fg:#2554b8; --k-bg:#eaf0fb; --k-fg:#2554b8;
+    --note-bg:#eef4ff; --note-warn-bg:#fdf6e8; --note-bad-bg:#fdeeee; --note-ok-bg:#eaf8f1;
+    --pill-ok:#0f9d6a; --pill-ok-bd:#b8e2d0; --pill-no:#d64545; --pill-no-bd:#f2c7c7;
+    --pill-wa:#b4761a; --pill-wa-bd:#efdcb6;
+    --copy-bg:#eef3fb; --copy-fg:#66748c; --shadow:0 1px 2px rgba(20,32,60,.05);
+  }
+  /* 暗色 */
+  :root[data-theme="dark"]{
+    --bg:#0b0e14; --card:#141922; --line:#232a36; --fg:#e8ecf3; --dim:#8b98ad;
+    --accent:#4f8cff; --ok:#3ddc97; --warn:#ffb84d; --err:#ff6b6b;
+    --text:#d3dbe8; --head4:#c7d3e6;
+    --code:#0e1420; --code-fg:#cfe3ff; --diag-fg:#9fd0ff;
+    --th-bg:#182033; --th-fg:#cfe0ff; --k-bg:#1b2434; --k-fg:#bcd0ff;
+    --note-bg:#131b2a; --note-warn-bg:#221b12; --note-bad-bg:#241318; --note-ok-bg:#12211a;
+    --pill-ok:#3ddc97; --pill-ok-bd:#1f4a38; --pill-no:#ff6b6b; --pill-no-bd:#4a1f1f;
+    --pill-wa:#ffb84d; --pill-wa-bd:#4a3a1f;
+    --copy-bg:#1d2634; --copy-fg:#8b98ad; --shadow:none;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:16px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{display:flex;max-width:1440px;margin:0 auto;gap:24px;padding:0 20px 80px}
+  aside{position:sticky;top:0;align-self:flex-start;height:100vh;overflow:auto;
+        flex:0 0 270px;padding:22px 0}
+  aside h2{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em;margin:18px 0 8px}
+  aside a{display:block;color:var(--dim);font-size:13.5px;padding:4px 0;border-left:2px solid transparent;padding-left:10px}
+  aside a:hover{color:var(--fg);border-left-color:var(--accent);text-decoration:none}
+  main{flex:1;min-width:0;padding-top:24px}
+  h1{font-size:27px;margin:0 0 6px}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:26px}
+  h2.sec{font-size:22px;margin:44px 0 6px;padding-top:14px;border-top:1px solid var(--line)}
+  h3{font-size:17.5px;margin:26px 0 8px}
+  h4{font-size:15px;margin:18px 0 6px;color:var(--head4)}
+  p,li{color:var(--text)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:14px 0}
+  .note{border-left:3px solid var(--accent);background:var(--note-bg);border-radius:0 10px 10px 0;padding:12px 16px;margin:14px 0}
+  .note.warn{border-left-color:var(--warn);background:var(--note-warn-bg)}
+  .note.bad{border-left-color:var(--err);background:var(--note-bad-bg)}
+  .note.ok{border-left-color:var(--ok);background:var(--note-ok-bg)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px;display:block;overflow:auto;
+        background:var(--card);border-radius:10px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--th-bg);color:var(--th-fg);font-weight:600;white-space:nowrap}
+  td code,.k{background:var(--k-bg);border-radius:5px;padding:1px 6px;font-size:13px;
+            font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--k-fg)}
+  pre{position:relative;background:var(--code);border:1px solid var(--line);border-radius:12px;
+      padding:14px 16px;overflow:auto;font-size:13px;line-height:1.62;margin:12px 0}
+  pre code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--code-fg);white-space:pre}
+  .copy{position:absolute;top:8px;right:8px;background:var(--copy-bg);border:1px solid var(--line);color:var(--copy-fg);
+        border-radius:8px;font-size:12px;padding:3px 9px;cursor:pointer}
+  .copy:hover{color:var(--fg)}
+  .diag{background:var(--code);border:1px solid var(--line);border-radius:12px;padding:16px;overflow:auto;
+        font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55;
+        color:var(--diag-fg);white-space:pre}
+  .pill{display:inline-block;font-size:11.5px;border:1px solid var(--line);border-radius:999px;padding:1px 9px;
+        color:var(--dim);margin-right:6px}
+  .pill.ok{color:var(--pill-ok);border-color:var(--pill-ok-bd)}
+  .pill.no{color:var(--pill-no);border-color:var(--pill-no-bd)}
+  .pill.wa{color:var(--pill-wa);border-color:var(--pill-wa-bd)}
+  footer{color:var(--dim);font-size:12.5px;border-top:1px solid var(--line);margin-top:50px;padding-top:16px}
+  .toc-top{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 10px}
+  .toc-top a{font-size:13px;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:3px 12px}
+  .back{font-size:13.5px}
+  .toprow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+  #themeToggle{font-size:12.5px;padding:4px 11px;border-radius:999px;white-space:nowrap;
+               background:var(--card);border:1px solid var(--line);color:var(--fg);cursor:pointer;box-shadow:var(--shadow)}
+  #themeToggle:hover{border-color:var(--accent)}
+  .ghlink{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;font-size:12.5px;
+          background:var(--card);border:1px solid var(--line);color:var(--fg);box-shadow:var(--shadow)}
+  .ghlink:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+  .ghlink svg{flex:0 0 auto}
+  @media (max-width:900px){ .wrap{flex-direction:column} aside{position:static;height:auto;flex:none}
+    aside a{display:inline-block;margin-right:10px} #themeToggle{margin-top:8px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+<aside>
+  <div class="toprow">
+    <a class="back" href="/">← 回到录音页面</a>
+    <span style="display:flex;gap:6px;align-items:center">
+      <a class="ghlink" href="__GITHUB_URL__" target="_blank" rel="noopener" title="在 GitHub 上查看源码"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></a>
+      <button id="themeToggle" data-theme-toggle></button>
+    </span>
+  </div>
+  <h2>目录</h2>
+  <a href="#overview">0. 一分钟看懂</a>
+  <a href="#how">1. 豆包输入法是怎么被借用的</a>
+  <a href="#package">1.1 下载地址与安装包</a>
+  <a href="#structure">1.2 包结构：哪部分负责语音识别</a>
+  <a href="#protocol">1.3 识别协议（protobuf 字段表）</a>
+  <a href="#errors">1.4 状态码与错误处理</a>
+  <a href="#language">1.5 语言能力（实测）</a>
+  <a href="#offline-doubao">1.6 豆包的离线识别是怎么做的</a>
+  <a href="#auth">2. 凭据从哪来（为什么不用登录）</a>
+  <a href="#clients">3. 自己写客户端（Python / Node / Go）</a>
+  <a href="#integrate">4. 集成到你的项目</a>
+  <a href="#relay">4.1 网页端为什么要中转</a>
+  <a href="#demoapi">4.2 本 Demo 的接口</a>
+  <a href="#production">4.3 生产环境注意事项</a>
+  <a href="#offline">5. 离线 / 本地方案</a>
+  <a href="#faq">6. 常见问题</a>
+</aside>
+
+<main>
+  <h1>原理与复刻指南</h1>
+  <div class="sub">
+    把一个「豆包输入法 PC 版的语音识别通道」拆开看清楚，再手把手教你把同样的调用写进自己的代码里。<br>
+    所有结论都是本轮实测得来（含反编译证据、抓到的原始协议、以及跑通的三种语言示例）。
+  </div>
+  <div class="toc-top">
+    <a href="#how">下载与包</a><a href="#protocol">协议</a><a href="#clients">示例代码</a>
+    <a href="#integrate">如何集成</a><a href="#offline">离线方案</a>
+  </div>
+
+  <h2 class="sec" id="overview">0. 一分钟看懂</h2>
+  <p>豆包输入法打字时用的「语音输入」，本质是<b>客户端把麦克风音频发到字节的流式识别服务</b>。它不需要登录、也没有对外公开 API，但它的凭据是<b>按设备匿名下发</b>的，所以我们可以自己复刻整条链路：</p>
+  <div class="diag">你的程序 ──①注册匿名设备──▶ log.snssdk.com          得到 device_id
+         ──②用 device_id 换 key─▶ is.snssdk.com/settings  得到 asr_config.app_key
+         ──③连 WebSocket────────▶ frontier-audio-ime-ws.doubao.com
+                                    │  StartTask → StartSession
+                                    │  TaskRequest（16k PCM / 20ms 一帧）
+                                    │  FinishSession
+         ◀──── ④识别结果（累积文本 + 逐字时间）──────────────────┘</div>
+  <div class="note">
+    <b>能不能直接用？</b>能，实测在 Linux 服务器上跑通了中文、英文、中英混说。
+    <b>但它是未公开的内部接口</b>：凭据按设备下发、随时可能变更或加风控，请只用于技术研究与自用，别拿去做对外产品（想产品化用<a href="#offline">火山引擎官方接口或本地开源模型</a>）。
+  </div>
+
+  <h2 class="sec" id="how">1. 豆包输入法是怎么被借用的</h2>
+
+  <h3 id="package">1.1 下载地址与安装包</h3>
+  <p>官网 PC 页是单页应用，真实下载地址由一个接口给出（<b>这是唯一官方渠道</b>，别用第三方下载站）：</p>
+  <pre><code class="sh"># 官网页面
+https://shurufa.doubao.com/pc
+
+# 下载信息接口（platform 可选 windows / macos / android / ios / harmony）
+curl 'https://shurufa.doubao.com/api/v1/app/download_url?platform=windows'
+# {"code":0,"data":{"release_date":"2026.10.10",
+#   "url":"https://lf-wave.doubaocdn.com/obj/doubao-ime/app/windows/DoubaoIME_Installer_0.9.2.7_release.exe",
+#   "version_code":90207,"version_name":"V0.9.2"},"msg":"success"}</code></pre>
+  <table>
+    <tr><th>平台</th><th>版本</th><th>包</th></tr>
+    <tr><td>Windows</td><td>V0.9.2 (0.9.2.7, 2026-10-10)</td>
+        <td><code>DoubaoIME_Installer_0.9.2.7_release.exe</code>，123,961,912 字节</td></tr>
+    <tr><td>macOS</td><td>V1.0.2</td><td><code>DoubaoImeInstaller_v1000207_release_…zip</code>，193,367,502 字节（内含 174MB 的 <code>DoubaoIme.zip</code>）</td></tr>
+    <tr><td>Android</td><td>v1.5.1</td><td><code>doubaoime_v1.5.1_100501006_official_arm64_release.apk</code>，170,975,042 字节</td></tr>
+  </table>
+  <p>Windows 包校验（本次实测）：</p>
+  <pre><code class="sh">SHA256  d777027cc822a67dac04ba502616f6e6216a54c06681e21f8f45ef0a89cec5db
+file    PE32 executable (GUI) Intel 80386, for MS Windows  # 32 位安装器
+</code></pre>
+  <h4>怎么把它解开</h4>
+  <p>安装器是 <b>Inno Setup 6.7.0</b>：<code>innoextract 1.9</code>（官方最新版）和 master 分支（支持到 6.4.0.1）都读不了它。
+  可行的办法是用 Wine 32 位跑静默安装，直接把文件树取出来：</p>
+  <pre><code class="sh"># 1) 装 32 位 wine 和虚拟显示（安装器需要窗口，无 X 会报 Invalid window handle）
+dpkg --add-architecture i386 &amp;&amp; apt-get update
+apt-get install -y --no-install-recommends wine32:i386 xvfb
+
+# 2) 静默安装到 wine 前缀（安装过程会因 TSF 注册失败回滚目录，但文件已经落盘）
+export WINEPREFIX=/root/doubao-ime/wineprefix WINEARCH=win32
+xvfb-run -a /usr/lib/wine/wine DoubaoIME_Installer_0.9.2.7_release.exe \
+    /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG='C:\inno.log'
+
+# 3) 文件就在（注意必须用 /usr/lib/wine/wine，/usr/local/bin/wine 是 wine64 跑不了 32 位）
+ls "$WINEPREFIX/drive_c/Program Files/DoubaoIME/versions/v0.9.2.7/"</code></pre>
+
+  <h3 id="structure">1.2 包结构：哪部分负责语音识别</h3>
+  <p>装出来的目录（<code>Program Files\DoubaoIME\versions\v0.9.2.7\</code>，约 267 MB）：</p>
+  <table>
+    <tr><th>文件</th><th>大小</th><th>职责</th></tr>
+    <tr><td><code>ImeService.exe</code></td><td>25 MB</td>
+        <td><b>服务进程</b>：麦克风采集、驱动语音会话（<code>SamiAsrClientWin</code>）、AI 联想、上下文构造、日志上报。
+            导入 <code>audioeffect-mt.dll</code> / <code>onnxruntime.dll</code> / <code>ui.dll</code> / <code>oime-config.dll</code></td></tr>
+    <tr><td><code>audioeffect-mt.dll</code></td><td>2.9 MB</td>
+        <td><b>语音识别的核心在这里</b>——字节 SAMI 语音 SDK：Opus 编解码、WebSocket/Cronet 传输、
+            protobuf 协议、frontier 连接池、token 处理、在线/整段两种识别模式的调度</td></tr>
+    <tr><td><code>tsf-oime.dll</code> / <code>tsf-oime-core.dll</code></td><td>2.2 MB</td>
+        <td>TSF 文本服务（输入法本体）：组合串、语音上屏、<b>选中文字后用语音改写</b>（<code>voice_modify_*</code>）</td></tr>
+    <tr><td><code>ui.dll</code></td><td>5 MB</td>
+        <td>输入法界面（候选窗、语音波形窗口）</td></tr>
+    <tr><td><code>onnxruntime.dll</code></td><td>10 MB</td>
+        <td>本地 ONNX 推理：手写识别 CRNN、候选打分 MLP（<b>不参与语音识别</b>）</td></tr>
+    <tr><td><code>sscronet.dll</code></td><td>9.9 MB</td>
+        <td>Cronet/TTNet 网络栈（HTTP/2、QUIC、DNS 调度），SAMI 的传输层</td></tr>
+    <tr><td><code>ime_net_sdk.dll</code></td><td>7 MB</td>
+        <td>Rust 写的网络 SDK（QUIC、网关通信），内含客户端证书 <code>CN=ImeNetSDK</code></td></tr>
+    <tr><td><code>rpc.dll</code> / <code>doubaoime-rpc-new.dll</code></td><td>3.3 MB</td><td>进程间 RPC（TSF DLL ↔ ImeService）</td></tr>
+    <tr><td><code>applogrs.dll</code> / <code>parfait*.dll</code></td><td>—</td><td>埋点统计 / 崩溃上报</td></tr>
+    <tr><td><code>DoubaoIme.Settings.*</code></td><td>—</td><td>.NET WPF 设置界面</td></tr>
+    <tr><td><code>files/data/dict/*</code></td><td>约 170 MB</td>
+        <td>词库与模型，文件名是<b>内容哈希</b>（如 <code>c48352298dbd</code> = 主词库 46 MB）；
+            其中 <code>asr/</code> 是识别用的文本后处理词表（n-gram / 纠错 / 豁免词），<b>不是声学模型</b></td></tr>
+  </table>
+  <div class="note">
+    <b>一句话结论：语音识别 = <code>ImeService.exe</code>（采集+调度） + <code>audioeffect-mt.dll</code>（SAMI 协议栈）</b>，
+    真正的声学模型在字节服务端。安装包里没有任何声学模型文件（这点很关键，见 <a href="#offline-doubao">1.6</a>）。
+  </div>
+  <h4>从编译期路径能看出的源码结构</h4>
+  <p>二进制里残留了开发机的源码路径，等于给了目录树：</p>
+  <table>
+    <tr><th>模块</th><th>路径线索（来自 <code>audioeffect-mt.dll</code>）</th></tr>
+    <tr><td>SAMI 语音 SDK</td><td><code>C:\19626\sami_core\sami_interface\src\capi\speech_v2\asr\online\*</code>
+        （<code>asr_on_worker</code> / <code>asr_on_callback</code> / <code>protocol</code> / <code>send_queue</code>）</td></tr>
+    <tr><td>SAMI 传输层</td><td><code>common_util\net\{frontier,connect_pool_v2,nqe,transport,multi_net}\*</code>、
+        <code>common_util\protobuf\WebSocket{Request,Response}.pb.cc</code></td></tr>
+    <tr><td>输入法服务端</td><td><code>C:\Workfolder\oime\obric-ime5\src\server\*</code>
+        （<code>sami_asr_client_win.cpp</code>、<code>asr_context_builder.cpp</code>、<code>voice_key_hook.cpp</code>、
+        <code>asr_modify_pair_uploader.cpp</code>）</td></tr>
+    <tr><td>输入法引擎 / 界面</td><td><code>obric-ime5\src\{shell,ime_ui,common,ttnet}\*</code>（引擎代号 <b>obric</b>）</td></tr>
+  </table>
+
+  <h3 id="protocol">1.3 识别协议</h3>
+  <p>一条 WebSocket 长连接，二进制 protobuf 帧，四个步骤：</p>
+  <div class="diag">连接  wss://frontier-audio-ime-ws.doubao.com/ocean/api/v1/ws?aid=685343&amp;device_id=&lt;did&gt;
+头部  User-Agent: com.bytedance.android.doubaoime/...   ← 伪装成官方客户端
+      proto-version: v2                                 ← 关键！没有它就回 JSON 而不是 protobuf
+      x-custom-keepalive: true
+
+① StartTask      { token=app_key, service=ASR }        → TaskStarted
+② StartSession   { payload=会话参数 JSON }              → SessionStarted
+③ TaskRequest ×N { audio=20ms PCM, frame_state=1/3/9 } → 结果 JSON（累积文本）
+④ FinishSession                                         → SessionFinished</div>
+  <h4>请求字段（实测得到的字段号）</h4>
+  <table>
+    <tr><th>字段号</th><th>类型</th><th>含义</th><th>值</th></tr>
+    <tr><td>2</td><td>string</td><td>token</td><td>第 ② 步拿到的 <code>asr_config.app_key</code></td></tr>
+    <tr><td>3</td><td>string</td><td>service_name</td><td><code>ASR</code></td></tr>
+    <tr><td>5</td><td>string</td><td>method_name</td><td><code>StartTask</code> / <code>StartSession</code> / <code>TaskRequest</code> / <code>FinishSession</code></td></tr>
+    <tr><td>6</td><td>string</td><td>payload</td><td>JSON 字符串（会话参数 / 每帧的时间戳）</td></tr>
+    <tr><td>7</td><td>bytes</td><td>audio_data</td><td>16k/单声道/PCM16，20 ms = 640 字节</td></tr>
+    <tr><td>8</td><td>string</td><td>request_id</td><td>自己生成的 UUID，用于对账</td></tr>
+    <tr><td>9</td><td>varint</td><td>frame_state</td><td>首帧 <code>1</code>、中间 <code>3</code>、末帧 <code>9</code></td></tr>
+  </table>
+  <h4>StartSession 的 payload</h4>
+  <pre><code class="json">{
+  "audio_info": { "channel": 1, "format": "raw", "sample_rate": 16000 },
+  "enable_punctuation": true,
+  "enable_speech_rejection": false,
+  "extra": {
+    "did": "&lt;device_id&gt;",
+    "input_mode": "tool",
+    "strong_ddc": true,            // 强纠错
+    "use_twopass_retry": true,     // 二遍重试
+    "enable_asr_twopass": true,    // 流式 + 整段两遍解码
+    "enable_asr_threepass": true,  // 三遍
+    "disable_user_words": false,   // 允许个人词库生效
+    "cell_compress_rate": 8,
+    "context": "&lt;base64&gt;"          // 可选：chat + ime_info + hotwords（热词偏置）
+  }
+}</code></pre>
+  <div class="note">音频格式：<code>format</code> 除了 <code>raw</code>（16k PCM16，最省事）也支持 <code>speech_opus</code>（官方客户端用的 Opus）。
+  用 <code>raw</code> 就不必自己实现 Opus 编码，实测同样能识别。</div>
+  <h4>响应字段</h4>
+  <table>
+    <tr><th>字段号</th><th>含义</th></tr>
+    <tr><td>2</td><td>task_id</td></tr>
+    <tr><td>4</td><td>事件名：<code>TaskStarted</code> / <code>SessionStarted</code> / <code>SessionFinished</code> / <code>TaskFailed</code> / <code>SessionFailed</code></td></tr>
+    <tr><td>5</td><td>状态码（见下表）</td></tr>
+    <tr><td>6</td><td>状态文本</td></tr>
+    <tr><td>7</td><td>结果 JSON（识别文本、时间、是否定稿）</td></tr>
+  </table>
+  <h4>结果 JSON（字段 7 的内容）</h4>
+  <pre><code class="json">{
+  "results": [{
+    "text": "你好，这是语音识别测试",      // 本次发言的累积文本，最后一条即完整结果
+    "start_time": 1.33, "end_time": 3.4,  // 秒，相对本次会话起点
+    "confidence": 0.998,
+    "is_interim": false,                  // false = 已定稿
+    "is_vad_finished": true,              // VAD 判定这一句说完了
+    "index": 0,
+    "alternatives": [{ "text": "…", "words": [
+        { "word": "你", "start_time": 0, "end_time": 0.34 }, …   // 逐字时间
+    ]}]
+  }]
+}</code></pre>
+  <div class="note warn"><b>两个实测坑：</b>
+    ① 短语气词会被反复改字（<code>唉→哎→唉</code>），三条消息 <code>start_time</code> 完全相同、只有 <code>end_time</code> 在涨——判断"新的一段"必须看起点，不能只看文本；
+    ② <code>alternatives[].words[].end_time</code> 偏大（带前瞻窗口），做字幕要用"下一句的首字时间 / 整段 end_time"校正。
+  </div>
+
+  <h3 id="errors">1.4 状态码与错误处理</h3>
+  <table>
+    <tr><th>状态码</th><th>含义</th><th>怎么处理</th></tr>
+    <tr><td><code>20000000</code></td><td>OK</td><td>—</td></tr>
+    <tr><td><code>50700000</code></td><td>service discovery failure（后端实例发现失败）</td>
+        <td><b>上游随机抖动，实测同 payload 约 1/5 概率</b>：重试整段即可（示例代码里带 3~4 次重试）</td></tr>
+    <tr><td><code>40200011</code></td><td>并发配额满（共享 app_key 限流）</td><td>排队/降并发，重试无用</td></tr>
+    <tr><td><code>40200001</code></td><td>鉴权失败：<code>IllegalToken</code> / <code>session auth, userID or appID is empty</code></td><td>app_key 失效 → 重新走第 ② 步换 key</td></tr>
+    <tr><td><code>40100003</code></td><td><code>StartTaskExpected</code></td><td>顺序错了：必须先 StartTask</td></tr>
+    <tr><td><code>40000022</code></td><td><code>IllegalPayload</code></td><td>payload 必须是字符串（JSON 文本），不是嵌套对象</td></tr>
+    <tr><td><code>40000000</code></td><td>app key not found in header or query</td><td>鉴权信息没带上</td></tr>
+  </table>
+
+  <h3 id="language">1.5 语言能力（实测）</h3>
+  <table>
+    <tr><th>输入</th><th>结果</th><th>结论</th></tr>
+    <tr><td>普通话</td><td>「你好，这是微信语音接口测试，今天阳光很好。」</td><td><span class="pill ok">支持</span></td></tr>
+    <tr><td>英语（JFK 演讲）</td><td>「And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.」</td><td><span class="pill ok">支持</span>（标点大小写都对）</td></tr>
+    <tr><td>中文一句 + 英语一句（同一会话）</td><td>两句各自按语言正确输出</td><td><span class="pill ok">中英混输</span></td></tr>
+    <tr><td>日语「こんにちは」</td><td>「国内计划。」</td><td><span class="pill no">不支持</span></td></tr>
+    <tr><td>日语「私は日本語を勉強しています」</td><td>「马达西」+「我倒希望你哄我。」</td><td><span class="pill no">不支持</span>（声学层听到了，但语言模型只有中文）</td></tr>
+  </table>
+  <p>原因是这个模型是 <b>zh + en 双语</b>（即官方宣传的"中英混输"），客户端创建识别句柄时写死的是 <code>speech_opus</code> + <code>zh</code>；
+  协议里没有 language 字段，所以没有"切语种"的开关。要用日语只能换官方多语种接口或在本地跑开源日语模型。</p>
+
+  <h3 id="offline-doubao">1.6 豆包的离线识别是怎么做的</h3>
+  <p>这是本轮最有价值的发现。结论先给：<b>离线识别 = 字节自研端侧推理引擎 Flute + 联网下载的模型包</b>，
+  而且 <b>Windows 0.9.2.7 里还没有这套东西</b>（Android / macOS 有）。</p>
+  <table>
+    <tr><th>层</th><th>证据</th><th>Windows 0.9.2.7</th><th>macOS 1.0.2</th><th>Android 1.5.1</th></tr>
+    <tr><td>端侧推理引擎 <b>Flute</b></td>
+        <td><code>flute/engine/engine.cc</code>、<code>flute_c_api.cc</code>、<code>flute/framework/*</code>、
+            <code>flute/base/filesystem_mmap/filesystem_packed_mmap.cc</code>（打包 mmap 模型容器）</td>
+        <td><span class="pill no">无</span></td><td><span class="pill ok">主程序内</span></td><td><span class="pill ok">libaudioeffect.so</span></td></tr>
+    <tr><td>ASR 模型结构</td>
+        <td><code>flute/module/asr/ntp_cif/{encoder_actor,cif_calculator,beam_searcher,decoder_context/prompt_processor}</code>、
+            <code>feature/{mel_bank,panther,subband}_feature_extractor</code>、<code>module/vad/v4</code>、<code>module/signal/aec</code></td>
+        <td><span class="pill no">无</span></td><td><span class="pill ok">有</span></td><td><span class="pill ok">有</span></td></tr>
+    <tr><td>SAMI 的本地 worker</td>
+        <td><code>speech_v2/asr/offline/{asr_off_singleton,asr_off_worker}.cpp</code>、<code>capi/flute/asr/flute_asr.cpp</code></td>
+        <td><span class="pill no">只有 online/*</span></td><td><span class="pill ok">有</span></td><td><span class="pill ok">有</span></td></tr>
+    <tr><td>模型下载管理</td>
+        <td>应用侧 <code>OimeOfflineModel</code> 模块：<code>ASROfflineModel{Manager,FileStore,PathResolver,MetaInfoService,Manifest}</code>、
+            通知 <code>start/pause/resume/retry/requestDelete/updateOfflineModelState</code>、
+            日志 <code>ASR offline model path:</code>、缺模型弹窗 <code>ASROfflineModelUnavailablePromptWindowController</code></td>
+        <td><span class="pill no">无</span></td><td><span class="pill ok">有</span></td><td>（APK 内未打包模型）</td></tr>
+  </table>
+  <h4>模型长什么样</h4>
+  <p>macOS 主程序里<b>写死了模型的张量文件名</b>（93 个 <code>.bin/.dat/json</code>），可以直接读出结构 —— 是
+    <b>PANTHER Conformer 编码器 + LLM 风格解码器</b>，CIF（连续积分激发）机制，int8 量化：</p>
+  <pre><code class="text">s/panther_conformer_*                     编码器
+s/panther_decoder_L*                      解码器
+s/panther_l0_{qkv_pre_rope,mha_raw,ffn1_gemm1,ffn2_swiglu,rmsnorm1,rmsnorm2,conv_out}.bin
+up_proj.bin / down_proj.bin / v_proj.bin / swiglu.bin / o_proj ...   权重张量
+*_shape.dat / input_shape.dat / config.json / token_config.json / llm_params.json</code></pre>
+  <p>算力后端是 CPU int8（源码里有 <code>PackBS8 format: 4x4 tiled layout matching CPU prepacked weights</code>）
+  加 GPU kernel（macOS 用 Metal，源码里带 <code>device const char*</code> 的着色器）。体量对得上"离线模型包约 150 MB"的说法。</p>
+  <h4>在线 / 离线怎么协同（SAMI 里的融合策略）</h4>
+  <ul>
+    <li><code>PutOnlineCacheAudioToOffline</code>：把在线期间缓存的音频交给整段识别重跑</li>
+    <li><code>[online vs offline] words num: [%d vs %d]</code>：两份结果对比择优</li>
+    <li>触发条件：<code>asr has no network, switch to offline</code>、<code>asr has no result, switch to offline</code>、<code>recv interval time</code></li>
+    <li>时间参数：<code>finish_wait_offline_time</code> / <code>offline_wait_online_time</code> / <code>max_wait_switch_offline_time</code></li>
+    <li>应用侧：<code>openASRPanel canceled: network disconnected, offlineModelStatus=</code>、<code>Skip smart text enable prompt: reason=offline_result</code></li>
+  </ul>
+  <div class="note bad"><b>为什么拿不过来用：</b>
+    ① 模型是私有逐张量格式，引擎里写死了张量名，版本一变就对不上；
+    ② Flute 静态编进客户端，没有任何公开 API；
+    ③ 模型包要从字节服务器鉴权下载。
+    <br>但<b>架构可以照抄</b>，落地就用开源等价物（见 <a href="#offline">第 5 节</a>）。
+  </div>
+
+  <h2 class="sec" id="auth">2. 凭据从哪来（为什么不用登录）</h2>
+  <p>豆包输入法没有任何账号体系参与语音识别，身份是<b>「应用身份 + 设备身份」</b>：</p>
+  <div class="diag">① POST https://log.snssdk.com/service/2/device_register/
+     body: {magic_tag:"ss_app_log", header:{aid:685343, app_name:"oime", cdid/openudid/clientudid, …}}
+     resp: {device_id, install_id, device_token}          ← 匿名注册一台设备（头条系通用接口）
+
+② POST https://is.snssdk.com/service/settings/v3/?device_id=&lt;did&gt;&amp;cdid=&lt;cdid&gt;
+     header: x-ss-stub = md5("body=null").upper()
+     resp: data.settings.asr_config.app_key = "RTIHIRzbwS"  ← ASR 用的 token，按设备下发
+
+   应用级 aid（编译进客户端）+ 设备级 app_key  → 服务端据此计量/风控，不需要用户账号</div>
+  <table>
+    <tr><th>要素</th><th>值 / 说明</th></tr>
+    <tr><td><code>aid</code></td><td><code>685343</code>（取自 <code>ImeService.exe</code>）</td></tr>
+    <tr><td>User-Agent</td><td><code>com.bytedance.android.doubaoime/100102018 (Linux; U; Android 16; en_US; Pixel 7 Pro; Build/BP2A.250605.031.A2)</code></td></tr>
+    <tr><td>app_key</td><td>按设备/时间下发（同一设备多次调用会拿到稳定的值，换设备就变），建议缓存 12 小时</td></tr>
+    <tr><td>为什么不需要登录</td><td>身份建立在"应用 + 设备"上；这也是头条系 App 的通用做法（安装即匿名注册）</td></tr>
+  </table>
+  <div class="note warn">你的程序里<b>不要暴露 app_key 给前端</b>（它是设备级凭据），网页端一律走服务端中转。</div>
+
+  <h2 class="sec" id="clients">3. 自己写客户端</h2>
+  <p>下面三份代码都是<b>完整可运行</b>的单文件客户端：自己注册设备、拿 app_key、跑完一次识别并打印文本。
+  复制走改一改就能用（<a href="/static/examples/asr_min.py">asr_min.py</a> /
+  <a href="/static/examples/asr_min.js">asr_min.js</a> / <a href="/static/examples/asr_min.go">asr_min.go</a> 也可直接下载）。</p>
+
+  <h3>Python</h3>
+  <pre><code class="sh">pip install websockets
+python asr_min.py test.wav        # 输出：你好，这是微信语音接口测试，今天阳光很好。</code></pre>
+  <pre><code class="python">#!/usr/bin/env python3
+&quot;&quot;&quot;豆包输入法语音识别 · 最小可用客户端（Python，单文件）
+
+原理：客户端内置 aid + 匿名设备注册 → 服务端下发 ASR app_key → 用它连 WebSocket，
+      按 20ms 一帧送 16k/单声道/PCM16，边送边收识别结果。
+
+用法: python3 asr_min.py &lt;16k-mono-16bit.wav&gt;
+依赖: pip install websockets
+&quot;&quot;&quot;
+import asyncio
+import hashlib
+import json
+import secrets
+import sys
+import time
+import urllib.parse
+import urllib.request
+import uuid
+import wave
+
+import websockets
+
+AID = 685343                     # 豆包输入法的 app id（取自客户端 ImeService.exe）
+APP_NAME = &quot;oime&quot;
+VERSION_CODE = 100102018
+VERSION_NAME = &quot;1.1.2&quot;
+UA = (&quot;com.bytedance.android.doubaoime/100102018 (Linux; U; Android 16; en_US; &quot;
+      &quot;Pixel 7 Pro; Build/BP2A.250605.031.A2)&quot;)
+REGISTER_URL = &quot;https://log.snssdk.com/service/2/device_register/&quot;   # 头条系匿名设备注册
+SETTINGS_URL = &quot;https://is.snssdk.com/service/settings/v3/&quot;          # 下发 asr_config.app_key
+WS_URL = &quot;wss://frontier-audio-ime-ws.doubao.com/ocean/api/v1/ws&quot;
+
+SAMPLE_RATE = 16000
+FRAME_BYTES = 640                # 20ms × 16kHz × 2字节 = 640
+
+
+# ----------------------------------------------------------------- 1. 拿凭据
+
+def _post(url, params, body, headers):
+    req = urllib.request.Request(url + &quot;?&quot; + urllib.parse.urlencode(params), data=body, method=&quot;POST&quot;)
+    for key, value in headers.items():
+        req.add_header(key, value)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode())
+
+
+def get_credentials():
+    &quot;&quot;&quot;返回 (device_id, app_key)。全过程匿名，不需要登录。&quot;&quot;&quot;
+    cdid, openudid, clientudid = str(uuid.uuid4()), secrets.token_hex(8), str(uuid.uuid4())
+    header = {
+        &quot;device_id&quot;: 0, &quot;install_id&quot;: 0, &quot;aid&quot;: AID, &quot;app_name&quot;: APP_NAME,
+        &quot;version_code&quot;: VERSION_CODE, &quot;version_name&quot;: VERSION_NAME,
+        &quot;manifest_version_code&quot;: VERSION_CODE, &quot;update_version_code&quot;: VERSION_CODE,
+        &quot;channel&quot;: &quot;official&quot;, &quot;device_platform&quot;: &quot;android&quot;, &quot;os&quot;: &quot;android&quot;, &quot;os_api&quot;: &quot;34&quot;,
+        &quot;os_version&quot;: &quot;16&quot;, &quot;device_type&quot;: &quot;Pixel 7 Pro&quot;, &quot;device_brand&quot;: &quot;google&quot;,
+        &quot;device_model&quot;: &quot;Pixel 7 Pro&quot;, &quot;resolution&quot;: &quot;1080*2400&quot;, &quot;dpi&quot;: &quot;420&quot;,
+        &quot;language&quot;: &quot;zh&quot;, &quot;timezone&quot;: 8, &quot;access&quot;: &quot;wifi&quot;, &quot;region&quot;: &quot;CN&quot;,
+        &quot;tz_name&quot;: &quot;Asia/Shanghai&quot;, &quot;tz_offset&quot;: 28800, &quot;openudid&quot;: openudid,
+        &quot;clientudid&quot;: clientudid, &quot;cdid&quot;: cdid,
+    }
+    body = json.dumps({&quot;magic_tag&quot;: &quot;ss_app_log&quot;, &quot;header&quot;: header,
+                       &quot;_gen_time&quot;: int(time.time() * 1000)}).encode()
+    params = {
+        &quot;device_platform&quot;: &quot;android&quot;, &quot;os&quot;: &quot;android&quot;, &quot;ssmix&quot;: &quot;a&quot;,
+        &quot;_rticket&quot;: str(int(time.time() * 1000)), &quot;cdid&quot;: cdid, &quot;channel&quot;: &quot;official&quot;,
+        &quot;aid&quot;: str(AID), &quot;app_name&quot;: APP_NAME, &quot;version_code&quot;: str(VERSION_CODE),
+        &quot;version_name&quot;: VERSION_NAME, &quot;manifest_version_code&quot;: str(VERSION_CODE),
+        &quot;update_version_code&quot;: str(VERSION_CODE), &quot;resolution&quot;: &quot;1080*2400&quot;, &quot;dpi&quot;: &quot;420&quot;,
+        &quot;device_type&quot;: &quot;Pixel 7 Pro&quot;, &quot;device_brand&quot;: &quot;google&quot;, &quot;language&quot;: &quot;zh&quot;,
+        &quot;os_api&quot;: &quot;34&quot;, &quot;os_version&quot;: &quot;16&quot;, &quot;ac&quot;: &quot;wifi&quot;,
+    }
+    out = _post(REGISTER_URL, params, body,
+                {&quot;Content-Type&quot;: &quot;application/json&quot;, &quot;User-Agent&quot;: UA})
+    device_id = str(out.get(&quot;device_id_str&quot;) or out.get(&quot;device_id&quot;) or &quot;&quot;)
+    if not device_id or device_id == &quot;0&quot;:
+        raise RuntimeError(f&quot;设备注册失败: {out}&quot;)
+
+    stub_body = b&quot;body=null&quot;
+    params = {
+        &quot;device_platform&quot;: &quot;android&quot;, &quot;os&quot;: &quot;android&quot;, &quot;ssmix&quot;: &quot;a&quot;, &quot;channel&quot;: &quot;official&quot;,
+        &quot;aid&quot;: str(AID), &quot;app_name&quot;: APP_NAME, &quot;version_code&quot;: str(VERSION_CODE),
+        &quot;version_name&quot;: VERSION_NAME, &quot;device_id&quot;: device_id, &quot;cdid&quot;: cdid,
+        &quot;_rticket&quot;: str(int(time.time() * 1000)),
+    }
+    out = _post(SETTINGS_URL, params, stub_body, {
+        &quot;User-Agent&quot;: UA,
+        &quot;x-ss-stub&quot;: hashlib.md5(stub_body).hexdigest().upper(),
+        &quot;Content-Type&quot;: &quot;application/x-www-form-urlencoded&quot;,
+    })
+    app_key = (out.get(&quot;data&quot;, {}).get(&quot;settings&quot;, {}).get(&quot;asr_config&quot;, {}) or {}).get(&quot;app_key&quot;)
+    if not app_key:
+        raise RuntimeError(f&quot;settings 没给 app_key: {out}&quot;)
+    return device_id, app_key
+
+
+# ----------------------------------------------------------------- 2. protobuf 帧
+
+def _varint(value):
+    out = bytearray()
+    while True:
+        byte = value &amp; 0x7F
+        value &gt;&gt;= 7
+        out.append(byte | 0x80 if value else byte)
+        if not value:
+            return bytes(out)
+
+
+def encode(token=&quot;&quot;, method=&quot;&quot;, payload=&quot;&quot;, audio=b&quot;&quot;, request_id=&quot;&quot;, state=0):
+    &quot;&quot;&quot;上游请求帧的字段号（实测得到）：
+       2=token(app_key) 3=service_name 5=method 6=payload 7=audio 8=request_id 9=frame_state
+    &quot;&quot;&quot;
+    body = bytearray()
+    for num, val in ((2, token), (3, &quot;ASR&quot;), (5, method), (6, payload)):
+        if val:
+            raw = val.encode()
+            body += _varint(num &lt;&lt; 3 | 2) + _varint(len(raw)) + raw
+    if audio:
+        body += _varint(7 &lt;&lt; 3 | 2) + _varint(len(audio)) + audio
+    if request_id:
+        raw = request_id.encode()
+        body += _varint(8 &lt;&lt; 3 | 2) + _varint(len(raw)) + raw
+    if state:
+        body += _varint(9 &lt;&lt; 3) + _varint(state)
+    return bytes(body)
+
+
+def decode(data):
+    &quot;&quot;&quot;响应帧 → {字段号: [值]}。2=task_id 4=消息类型 5=状态码 6=状态文本 7=结果 JSON&quot;&quot;&quot;
+    out, off = {}, 0
+
+    def read_varint(buf, pos):
+        val = shift = 0
+        while True:
+            byte = buf[pos]
+            pos += 1
+            val |= (byte &amp; 0x7F) &lt;&lt; shift
+            shift += 7
+            if not byte &amp; 0x80:
+                return val, pos
+
+    while off &lt; len(data):
+        tag, off = read_varint(data, off)
+        field, wire = tag &gt;&gt; 3, tag &amp; 7
+        if wire == 0:
+            val, off = read_varint(data, off)
+            out.setdefault(field, []).append(val)
+        elif wire == 2:
+            length, off = read_varint(data, off)
+            out.setdefault(field, []).append(data[off:off + length])
+            off += length
+        elif wire == 1:
+            off += 8
+        elif wire == 5:
+            off += 4
+        else:
+            break
+    return out
+
+
+def text_of(msg, field):
+    val = msg.get(field)
+    if not val:
+        return None
+    return val[0].decode(&quot;utf-8&quot;, &quot;replace&quot;) if isinstance(val[0], bytes) else val[0]
+
+
+# ----------------------------------------------------------------- 3. 跑一次识别
+
+def is_retryable(err):
+    &quot;&quot;&quot;上游会偶发 50700000 service discovery failure（实测约 1/5 概率），重试即可。&quot;&quot;&quot;
+    msg = str(err)
+    return &quot;service discovery&quot; in msg or any(f&quot;[{code}&quot; in msg for code in range(50000000, 60000000))
+
+
+async def transcribe(path, retries=4):
+    &quot;&quot;&quot;带重试的一次识别：上游抖动 / 连接断开都重试整段。&quot;&quot;&quot;
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return await _transcribe_once(path)
+        except Exception as exc:                     # noqa: BLE001
+            last_error = exc
+            if not is_retryable(exc) or attempt == retries - 1:
+                raise
+            print(f&quot;  [重试 {attempt + 1}/{retries - 1}] {exc}&quot;, file=sys.stderr)
+            await asyncio.sleep(0.6)
+    raise last_error
+
+
+async def _transcribe_once(path):
+    with wave.open(path, &quot;rb&quot;) as wav:
+        assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (1, 2, 16000), \
+            &quot;需要 16kHz / 单声道 / 16bit 的 WAV（可用 ffmpeg -ar 16000 -ac 1 转换）&quot;
+        pcm = wav.readframes(wav.getnframes())
+
+    device_id, app_key = get_credentials()
+    url = f&quot;{WS_URL}?aid={AID}&amp;device_id={device_id}&quot;
+    headers = {&quot;User-Agent&quot;: UA, &quot;proto-version&quot;: &quot;v2&quot;, &quot;x-custom-keepalive&quot;: &quot;true&quot;}
+    request_id = str(uuid.uuid4())
+    text, done = &quot;&quot;, False
+
+    async with websockets.connect(url, additional_headers=headers,
+                                  open_timeout=15, max_size=None) as ws:
+        # ① StartTask：建任务
+        await ws.send(encode(app_key, &quot;StartTask&quot;, request_id=request_id))
+        msg = decode(await ws.recv())
+        if text_of(msg, 4) != &quot;TaskStarted&quot;:
+            raise RuntimeError(f&quot;StartTask 失败: {text_of(msg, 4)} {msg.get(5)} {text_of(msg, 6)}&quot;)
+
+        # ② StartSession：声明音频格式 + 识别参数
+        session_payload = json.dumps({
+            &quot;audio_info&quot;: {&quot;channel&quot;: 1, &quot;format&quot;: &quot;raw&quot;, &quot;sample_rate&quot;: SAMPLE_RATE},
+            &quot;enable_punctuation&quot;: True,
+            &quot;enable_speech_rejection&quot;: False,
+            &quot;extra&quot;: {
+                &quot;did&quot;: device_id, &quot;input_mode&quot;: &quot;tool&quot;,
+                &quot;strong_ddc&quot;: True, &quot;use_twopass_retry&quot;: True,
+                &quot;enable_asr_twopass&quot;: True, &quot;enable_asr_threepass&quot;: True,
+                &quot;disable_user_words&quot;: False, &quot;cell_compress_rate&quot;: 8,
+            },
+        }, ensure_ascii=False)
+        await ws.send(encode(app_key, &quot;StartSession&quot;, payload=session_payload, request_id=request_id))
+        msg = decode(await ws.recv())
+        if text_of(msg, 4) != &quot;SessionStarted&quot;:
+            raise RuntimeError(f&quot;StartSession 失败: {text_of(msg, 4)} {msg.get(5)} {text_of(msg, 6)}&quot;)
+
+        # ③ TaskRequest：20ms 一帧；首帧 1、中间 3、末帧 9
+        frames = [pcm[i:i + FRAME_BYTES] for i in range(0, len(pcm), FRAME_BYTES)]
+        for index, frame in enumerate(frames):
+            state = 1 if index == 0 else (9 if index == len(frames) - 1 else 3)
+            await ws.send(encode(&quot;&quot;, &quot;TaskRequest&quot;, payload=&quot;{}&quot;, audio=frame,
+                                 request_id=request_id, state=state))
+            await asyncio.sleep(0.02)          # 按实时速度喂；也可以更快
+
+        # ④ FinishSession：收尾
+        await ws.send(encode(app_key, &quot;FinishSession&quot;, request_id=request_id))
+
+        while not done:
+            msg = decode(await asyncio.wait_for(ws.recv(), timeout=20))
+            kind, result = text_of(msg, 4), text_of(msg, 7)
+            if result:
+                data = json.loads(result)
+                for item in data.get(&quot;results&quot;) or []:
+                    if item.get(&quot;text&quot;):
+                        text = item[&quot;text&quot;]        # 累积文本，最后一条即完整结果
+            if kind in (&quot;SessionFinished&quot;, &quot;TaskFinished&quot;):
+                done = True
+            elif kind in (&quot;SessionFailed&quot;, &quot;TaskFailed&quot;):
+                raise RuntimeError(f&quot;识别失败: {msg.get(5)} {text_of(msg, 6)}&quot;)
+    return text
+
+
+if __name__ == &quot;__main__&quot;:
+    if len(sys.argv) &lt; 2:
+        sys.exit(&quot;用法: python3 asr_min.py &lt;16k-mono-16bit.wav&gt;&quot;)
+    print(asyncio.run(transcribe(sys.argv[1])))</code></pre>
+
+  <h3>Node.js</h3>
+  <pre><code class="sh">npm i ws
+node asr_min.js test.wav</code></pre>
+  <div class="note">为什么不用 Node 自带的全局 <code>WebSocket</code>：上游靠 <code>proto-version: v2</code> 这个<b>握手头</b>来选择二进制 protobuf 协议，
+  没有它就回 JSON；而全局 <code>WebSocket</code> 和浏览器一样<b>无法设置自定义请求头</b>，所以这里用 <code>ws</code> 包。</div>
+  <pre><code class="javascript">#!/usr/bin/env node
+/**
+ * 豆包输入法语音识别 · 最小可用客户端（Node.js）
+ *
+ * 用法: npm i ws &amp;&amp; node asr_min.js &lt;16k-mono-16bit.wav&gt;
+ *
+ * 为什么不用 Node 自带的全局 WebSocket：上游靠 `proto-version: v2` 这个握手头选择
+ * 二进制 protobuf 协议，没有它就回 JSON；而全局 WebSocket 无法设置自定义请求头，
+ * 所以这里用 ws 包（浏览器同理——这也是网页端必须走服务端中转的原因）。
+ */
+
+const fs = require(&quot;node:fs&quot;);
+const crypto = require(&quot;node:crypto&quot;);
+const WebSocket = require(&quot;ws&quot;);
+
+const AID = 685343;                 // 豆包输入法的 app id（取自客户端 ImeService.exe）
+const APP_NAME = &quot;oime&quot;;
+const VERSION_CODE = 100102018;
+const VERSION_NAME = &quot;1.1.2&quot;;
+const UA = &quot;com.bytedance.android.doubaoime/100102018 (Linux; U; Android 16; en_US; &quot; +
+           &quot;Pixel 7 Pro; Build/BP2A.250605.031.A2)&quot;;
+const REGISTER_URL = &quot;https://log.snssdk.com/service/2/device_register/&quot;;
+const SETTINGS_URL = &quot;https://is.snssdk.com/service/settings/v3/&quot;;
+const WS_URL = &quot;wss://frontier-audio-ime-ws.doubao.com/ocean/api/v1/ws&quot;;
+
+const SAMPLE_RATE = 16000;
+const FRAME_BYTES = 640;            // 20ms × 16kHz × 2 字节
+
+// ------------------------------------------------------------- 1. 拿凭据
+
+async function postJson(url, params, body, headers) {
+  const target = `${url}?${new URLSearchParams(params)}`;
+  const resp = await fetch(target, { method: &quot;POST&quot;, body, headers });
+  if (!resp.ok) throw new Error(`${url} HTTP ${resp.status}: ${await resp.text()}`);
+  return resp.json();
+}
+
+async function getCredentials() {
+  const cdid = crypto.randomUUID();
+  const openudid = crypto.randomUUID().replace(/-/g, &quot;&quot;).slice(0, 16);
+  const clientudid = crypto.randomUUID();
+  const header = {
+    device_id: 0, install_id: 0, aid: AID, app_name: APP_NAME,
+    version_code: VERSION_CODE, version_name: VERSION_NAME,
+    manifest_version_code: VERSION_CODE, update_version_code: VERSION_CODE,
+    channel: &quot;official&quot;, device_platform: &quot;android&quot;, os: &quot;android&quot;, os_api: &quot;34&quot;,
+    os_version: &quot;16&quot;, device_type: &quot;Pixel 7 Pro&quot;, device_brand: &quot;google&quot;,
+    device_model: &quot;Pixel 7 Pro&quot;, resolution: &quot;1080*2400&quot;, dpi: &quot;420&quot;,
+    language: &quot;zh&quot;, timezone: 8, access: &quot;wifi&quot;, region: &quot;CN&quot;,
+    tz_name: &quot;Asia/Shanghai&quot;, tz_offset: 28800, openudid, clientudid, cdid,
+  };
+  const reg = await postJson(REGISTER_URL, {
+    device_platform: &quot;android&quot;, os: &quot;android&quot;, ssmix: &quot;a&quot;, _rticket: Date.now(),
+    cdid, channel: &quot;official&quot;, aid: AID, app_name: APP_NAME,
+    version_code: VERSION_CODE, version_name: VERSION_NAME,
+    manifest_version_code: VERSION_CODE, update_version_code: VERSION_CODE,
+    resolution: &quot;1080*2400&quot;, dpi: &quot;420&quot;, device_type: &quot;Pixel 7 Pro&quot;,
+    device_brand: &quot;google&quot;, language: &quot;zh&quot;, os_api: &quot;34&quot;, os_version: &quot;16&quot;, ac: &quot;wifi&quot;,
+  }, JSON.stringify({ magic_tag: &quot;ss_app_log&quot;, header, _gen_time: Date.now() }),
+     { &quot;Content-Type&quot;: &quot;application/json&quot;, &quot;User-Agent&quot;: UA });
+
+  const deviceId = String(reg.device_id_str || reg.device_id || &quot;&quot;);
+  if (!deviceId || deviceId === &quot;0&quot;) throw new Error(`设备注册失败: ${JSON.stringify(reg)}`);
+
+  const stub = &quot;body=null&quot;;
+  const settings = await postJson(SETTINGS_URL, {
+    device_platform: &quot;android&quot;, os: &quot;android&quot;, ssmix: &quot;a&quot;, channel: &quot;official&quot;,
+    aid: AID, app_name: APP_NAME, version_code: VERSION_CODE, version_name: VERSION_NAME,
+    device_id: deviceId, cdid, _rticket: Date.now(),
+  }, stub, {
+    &quot;User-Agent&quot;: UA,
+    &quot;Content-Type&quot;: &quot;application/x-www-form-urlencoded&quot;,
+    &quot;x-ss-stub&quot;: crypto.createHash(&quot;md5&quot;).update(stub).digest(&quot;hex&quot;).toUpperCase(),
+  });
+  const appKey = settings?.data?.settings?.asr_config?.app_key;
+  if (!appKey) throw new Error(`settings 没给 app_key: ${JSON.stringify(settings)}`);
+  return { deviceId, appKey };
+}
+
+// ------------------------------------------------------------- 2. protobuf 帧
+
+function varint(value) {
+  const out = [];
+  while (true) {
+    let byte = value &amp; 0x7f;
+    value = Math.floor(value / 128);
+    out.push(value ? byte | 0x80 : byte);
+    if (!value) return Buffer.from(out);
+  }
+}
+
+function encode({ token = &quot;&quot;, method = &quot;&quot;, payload = &quot;&quot;, audio = null, requestId = &quot;&quot;, state = 0 }) {
+  const parts = [];
+  for (const [num, val] of [[2, token], [3, &quot;ASR&quot;], [5, method], [6, payload]]) {
+    if (!val) continue;
+    const raw = Buffer.from(val, &quot;utf8&quot;);
+    parts.push(varint((num &lt;&lt; 3) | 2), varint(raw.length), raw);
+  }
+  if (audio &amp;&amp; audio.length) {
+    parts.push(varint((7 &lt;&lt; 3) | 2), varint(audio.length), audio);
+  }
+  if (requestId) {
+    const raw = Buffer.from(requestId, &quot;utf8&quot;);
+    parts.push(varint((8 &lt;&lt; 3) | 2), varint(raw.length), raw);
+  }
+  if (state) parts.push(varint(9 &lt;&lt; 3), varint(state));
+  return Buffer.concat(parts);
+}
+
+function decode(buf) {
+  const out = {};
+  let off = 0;
+  const readVarint = (pos) =&gt; {
+    let val = 0, shift = 0;
+    while (true) {
+      const byte = buf[pos++];
+      val |= (byte &amp; 0x7f) &lt;&lt; shift;
+      shift += 7;
+      if (!(byte &amp; 0x80)) return [val, pos];
+    }
+  };
+  while (off &lt; buf.length) {
+    let tag; [tag, off] = readVarint(off);
+    const field = tag &gt;&gt; 3, wire = tag &amp; 7;
+    if (wire === 0) {
+      let val; [val, off] = readVarint(off);
+      (out[field] ||= []).push(val);
+    } else if (wire === 2) {
+      let len; [len, off] = readVarint(off);
+      (out[field] ||= []).push(buf.subarray(off, off + len));
+      off += len;
+    } else if (wire === 1) off += 8;
+    else if (wire === 5) off += 4;
+    else break;
+  }
+  return out;
+}
+
+const textOf = (msg, field) =&gt; {
+  const val = msg[field]?.[0];
+  return val == null ? null : (Buffer.isBuffer(val) ? val.toString(&quot;utf8&quot;) : val);
+};
+
+// ------------------------------------------------------------- 3. 跑一次识别
+
+function readWav(path) {
+  const buf = fs.readFileSync(path);
+  if (buf.toString(&quot;ascii&quot;, 0, 4) !== &quot;RIFF&quot;) throw new Error(&quot;不是 WAV 文件&quot;);
+  let off = 12;
+  while (off + 8 &lt;= buf.length) {
+    const id = buf.toString(&quot;ascii&quot;, off, off + 4);
+    const size = buf.readUInt32LE(off + 4);
+    if (id === &quot;fmt &quot;) {
+      const channels = buf.readUInt16LE(off + 10);
+      const rate = buf.readUInt32LE(off + 12);
+      const bits = buf.readUInt16LE(off + 22);
+      if (channels !== 1 || rate !== SAMPLE_RATE || bits !== 16) {
+        throw new Error(`需要 16kHz/单声道/16bit 的 WAV，实际 ${rate}Hz/${channels}ch/${bits}bit`);
+      }
+    }
+    if (id === &quot;data&quot;) {
+      return buf.subarray(off + 8, off + 8 + size);
+    }
+    off += 8 + size + (size % 2);
+  }
+  throw new Error(&quot;WAV 里没有 data 段&quot;);
+}
+
+async function transcribeOnce(path) {
+  const pcm = readWav(path);
+  const { deviceId, appKey } = await getCredentials();
+  const requestId = crypto.randomUUID();
+  const ws = new WebSocket(`${WS_URL}?aid=${AID}&amp;device_id=${deviceId}`, {
+    headers: { &quot;User-Agent&quot;: UA, &quot;proto-version&quot;: &quot;v2&quot;, &quot;x-custom-keepalive&quot;: &quot;true&quot; },
+  });
+
+  let text = &quot;&quot;;
+  let finished = false;
+  let failure = null;
+  const queue = [];
+  const waiters = [];
+  let closed = false;
+
+  ws.on(&quot;message&quot;, (data) =&gt; {
+    const msg = decode(Buffer.from(data));
+    if (waiters.length) waiters.shift()(msg); else queue.push(msg);
+  });
+  ws.on(&quot;error&quot;, (err) =&gt; { failure = failure || err; closed = true; while (waiters.length) waiters.shift()(null); });
+  ws.on(&quot;close&quot;, () =&gt; { closed = true; while (waiters.length) waiters.shift()(null); });
+
+  const nextMessage = () =&gt; new Promise((resolve, reject) =&gt; {
+    if (queue.length) return resolve(queue.shift());
+    if (closed) return reject(new Error(&quot;连接已关闭&quot;));
+    const timer = setTimeout(() =&gt; reject(new Error(&quot;等待上游响应超时&quot;)), 25000);
+    waiters.push((msg) =&gt; { clearTimeout(timer); msg ? resolve(msg) : reject(new Error(&quot;连接已关闭&quot;)); });
+  });
+
+  await new Promise((resolve, reject) =&gt; {
+    ws.once(&quot;open&quot;, resolve);
+    ws.once(&quot;error&quot;, () =&gt; reject(new Error(&quot;WebSocket 连接失败&quot;)));
+  });
+
+  // ① StartTask
+  ws.send(encode({ token: appKey, method: &quot;StartTask&quot;, requestId }));
+  let msg = await nextMessage();
+  if (textOf(msg, 4) !== &quot;TaskStarted&quot;) {
+    throw new Error(`StartTask 失败: ${textOf(msg, 4)} ${msg[5]} ${textOf(msg, 6)}`);
+  }
+
+  // ② StartSession
+  const sessionPayload = JSON.stringify({
+    audio_info: { channel: 1, format: &quot;raw&quot;, sample_rate: SAMPLE_RATE },
+    enable_punctuation: true,
+    enable_speech_rejection: false,
+    extra: {
+      did: deviceId, input_mode: &quot;tool&quot;,
+      strong_ddc: true, use_twopass_retry: true,
+      enable_asr_twopass: true, enable_asr_threepass: true,
+      disable_user_words: false, cell_compress_rate: 8,
+    },
+  });
+  ws.send(encode({ token: appKey, method: &quot;StartSession&quot;, payload: sessionPayload, requestId }));
+  msg = await nextMessage();
+  if (textOf(msg, 4) !== &quot;SessionStarted&quot;) {
+    throw new Error(`StartSession 失败: ${textOf(msg, 4)} ${msg[5]} ${textOf(msg, 6)}`);
+  }
+
+  // ③ 边收结果边发音频
+  const collector = (async () =&gt; {
+    while (!finished) {
+      let incoming;
+      try {
+        incoming = await nextMessage();
+      } catch (err) { failure = failure || err; return; }
+      if (!incoming) { failure = failure || new Error(&quot;连接提前关闭&quot;); return; }
+      const kind = textOf(incoming, 4);
+      const result = textOf(incoming, 7);
+      if (result) {
+        const data = JSON.parse(result);
+        for (const item of data.results || []) {
+          if (item.text) text = item.text;        // 累积文本，最后一条即完整结果
+        }
+      }
+      if (kind === &quot;SessionFinished&quot; || kind === &quot;TaskFinished&quot;) finished = true;
+      if (kind === &quot;SessionFailed&quot; || kind === &quot;TaskFailed&quot;) {
+        failure = new Error(`识别失败: ${incoming[5]} ${textOf(incoming, 6)}`);
+        finished = true;
+      }
+    }
+  })();
+
+  for (let i = 0; i &lt; pcm.length; i += FRAME_BYTES) {
+    const frame = pcm.subarray(i, i + FRAME_BYTES);
+    const state = i === 0 ? 1 : (i + FRAME_BYTES &gt;= pcm.length ? 9 : 3);
+    ws.send(encode({ method: &quot;TaskRequest&quot;, payload: &quot;{}&quot;, audio: frame, requestId, state }));
+    await new Promise((r) =&gt; setTimeout(r, 20));         // 按实时速度喂
+  }
+
+  // ④ FinishSession
+  ws.send(encode({ token: appKey, method: &quot;FinishSession&quot;, requestId }));
+  await Promise.race([collector, new Promise((r) =&gt; setTimeout(r, 25000))]);
+  ws.close();
+  if (failure) throw failure;
+  return text;
+}
+
+const isRetryable = (err) =&gt; /service discovery|\[5\d{7}/.test(String(err));
+
+async function transcribe(path, retries = 4) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await transcribeOnce(path);
+    } catch (err) {
+      if (!isRetryable(err) || attempt &gt;= retries - 1) throw err;
+      console.error(`  [重试 ${attempt + 1}/${retries - 1}] ${err.message}`);
+      await new Promise((r) =&gt; setTimeout(r, 600));
+    }
+  }
+}
+
+const file = process.argv[2];
+if (!file) {
+  console.error(&quot;用法: node asr_min.js &lt;16k-mono-16bit.wav&gt;&quot;);
+  process.exit(1);
+}
+transcribe(file).then((text) =&gt; console.log(text))
+  .catch((err) =&gt; { console.error(&quot;失败:&quot;, err.message); process.exit(2); });</code></pre>
+
+  <h3>Go</h3>
+  <pre><code class="sh">cd examples &amp;&amp; go mod tidy &amp;&amp; go run asr_min.go test.wav</code></pre>
+  <pre><code class="go">// 豆包输入法语音识别 · 最小可用客户端（Go）
+//
+// 用法:
+//   cd examples &amp;&amp; go mod tidy &amp;&amp; go run asr_min.go &lt;16k-mono-16bit.wav&gt;
+//
+// 依赖: github.com/gorilla/websocket
+package main
+
+import (
+	&quot;bytes&quot;
+	&quot;crypto/md5&quot;
+	&quot;encoding/binary&quot;
+	&quot;encoding/hex&quot;
+	&quot;encoding/json&quot;
+	&quot;errors&quot;
+	&quot;fmt&quot;
+	&quot;io&quot;
+	&quot;net/http&quot;
+	&quot;net/url&quot;
+	&quot;os&quot;
+	&quot;strings&quot;
+	&quot;time&quot;
+
+	&quot;github.com/google/uuid&quot;
+	&quot;github.com/gorilla/websocket&quot;
+)
+
+const (
+	aid          = 685343 // 豆包输入法的 app id（取自客户端 ImeService.exe）
+	appName      = &quot;oime&quot;
+	versionCode  = 100102018
+	versionName  = &quot;1.1.2&quot;
+	userAgent    = &quot;com.bytedance.android.doubaoime/100102018 (Linux; U; Android 16; en_US; Pixel 7 Pro; Build/BP2A.250605.031.A2)&quot;
+	registerURL  = &quot;https://log.snssdk.com/service/2/device_register/&quot;
+	settingsURL  = &quot;https://is.snssdk.com/service/settings/v3/&quot;
+	wsURL        = &quot;wss://frontier-audio-ime-ws.doubao.com/ocean/api/v1/ws&quot;
+	sampleRate   = 16000
+	frameBytes   = 640 // 20ms × 16kHz × 2 字节
+	maxRetry     = 4
+)
+
+var httpClient = &amp;http.Client{Timeout: 25 * time.Second}
+
+// ---------------------------------------------------------------- 1. 拿凭据
+
+func postJSON(endpoint string, params url.Values, body []byte, headers map[string]string, out any) error {
+	req, err := http.NewRequest(http.MethodPost, endpoint+&quot;?&quot;+params.Encode(), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf(&quot;%s HTTP %s: %s&quot;, endpoint, resp.Status, string(raw))
+	}
+	return json.Unmarshal(raw, out)
+}
+
+// getCredentials 匿名注册一台设备并换取 ASR 的 app_key（不需要账号登录）
+func getCredentials() (deviceID, appKey string, err error) {
+	cdid := uuid.NewString()
+	openudid := strings.ReplaceAll(uuid.NewString(), &quot;-&quot;, &quot;&quot;)[:16]
+	clientudid := uuid.NewString()
+
+	header := map[string]any{
+		&quot;device_id&quot;: 0, &quot;install_id&quot;: 0, &quot;aid&quot;: aid, &quot;app_name&quot;: appName,
+		&quot;version_code&quot;: versionCode, &quot;version_name&quot;: versionName,
+		&quot;manifest_version_code&quot;: versionCode, &quot;update_version_code&quot;: versionCode,
+		&quot;channel&quot;: &quot;official&quot;, &quot;device_platform&quot;: &quot;android&quot;, &quot;os&quot;: &quot;android&quot;, &quot;os_api&quot;: &quot;34&quot;,
+		&quot;os_version&quot;: &quot;16&quot;, &quot;device_type&quot;: &quot;Pixel 7 Pro&quot;, &quot;device_brand&quot;: &quot;google&quot;,
+		&quot;device_model&quot;: &quot;Pixel 7 Pro&quot;, &quot;resolution&quot;: &quot;1080*2400&quot;, &quot;dpi&quot;: &quot;420&quot;,
+		&quot;language&quot;: &quot;zh&quot;, &quot;timezone&quot;: 8, &quot;access&quot;: &quot;wifi&quot;, &quot;region&quot;: &quot;CN&quot;,
+		&quot;tz_name&quot;: &quot;Asia/Shanghai&quot;, &quot;tz_offset&quot;: 28800, &quot;openudid&quot;: openudid,
+		&quot;clientudid&quot;: clientudid, &quot;cdid&quot;: cdid,
+	}
+	body, _ := json.Marshal(map[string]any{
+		&quot;magic_tag&quot;: &quot;ss_app_log&quot;, &quot;header&quot;: header, &quot;_gen_time&quot;: time.Now().UnixMilli(),
+	})
+	params := url.Values{
+		&quot;device_platform&quot;: {&quot;android&quot;}, &quot;os&quot;: {&quot;android&quot;}, &quot;ssmix&quot;: {&quot;a&quot;},
+		&quot;_rticket&quot;: {fmt.Sprint(time.Now().UnixMilli())}, &quot;cdid&quot;: {cdid}, &quot;channel&quot;: {&quot;official&quot;},
+		&quot;aid&quot;: {fmt.Sprint(aid)}, &quot;app_name&quot;: {appName}, &quot;version_code&quot;: {fmt.Sprint(versionCode)},
+		&quot;version_name&quot;: {versionName}, &quot;manifest_version_code&quot;: {fmt.Sprint(versionCode)},
+		&quot;update_version_code&quot;: {fmt.Sprint(versionCode)}, &quot;resolution&quot;: {&quot;1080*2400&quot;}, &quot;dpi&quot;: {&quot;420&quot;},
+		&quot;device_type&quot;: {&quot;Pixel 7 Pro&quot;}, &quot;device_brand&quot;: {&quot;google&quot;}, &quot;language&quot;: {&quot;zh&quot;},
+		&quot;os_api&quot;: {&quot;34&quot;}, &quot;os_version&quot;: {&quot;16&quot;}, &quot;ac&quot;: {&quot;wifi&quot;},
+	}
+	var reg struct {
+		DeviceIDStr string `json:&quot;device_id_str&quot;`
+		DeviceID    any    `json:&quot;device_id&quot;`
+	}
+	if err = postJSON(registerURL, params, body,
+		map[string]string{&quot;Content-Type&quot;: &quot;application/json&quot;, &quot;User-Agent&quot;: userAgent}, &amp;reg); err != nil {
+		return &quot;&quot;, &quot;&quot;, err
+	}
+	deviceID = reg.DeviceIDStr
+	if deviceID == &quot;&quot; || deviceID == &quot;0&quot; {
+		deviceID = fmt.Sprint(reg.DeviceID)
+	}
+	if deviceID == &quot;&quot; || deviceID == &quot;0&quot; {
+		return &quot;&quot;, &quot;&quot;, errors.New(&quot;设备注册失败：没有 device_id&quot;)
+	}
+
+	stub := []byte(&quot;body=null&quot;)
+	sum := md5.Sum(stub)
+	params = url.Values{
+		&quot;device_platform&quot;: {&quot;android&quot;}, &quot;os&quot;: {&quot;android&quot;}, &quot;ssmix&quot;: {&quot;a&quot;}, &quot;channel&quot;: {&quot;official&quot;},
+		&quot;aid&quot;: {fmt.Sprint(aid)}, &quot;app_name&quot;: {appName}, &quot;version_code&quot;: {fmt.Sprint(versionCode)},
+		&quot;version_name&quot;: {versionName}, &quot;device_id&quot;: {deviceID}, &quot;cdid&quot;: {cdid},
+		&quot;_rticket&quot;: {fmt.Sprint(time.Now().UnixMilli())},
+	}
+	var settings struct {
+		Data struct {
+			Settings struct {
+				ASRConfig struct {
+					AppKey string `json:&quot;app_key&quot;`
+				} `json:&quot;asr_config&quot;`
+			} `json:&quot;settings&quot;`
+		} `json:&quot;data&quot;`
+	}
+	if err = postJSON(settingsURL, params, stub, map[string]string{
+		&quot;User-Agent&quot;:       userAgent,
+		&quot;x-ss-stub&quot;:        strings.ToUpper(hex.EncodeToString(sum[:])),
+		&quot;Content-Type&quot;:     &quot;application/x-www-form-urlencoded&quot;,
+	}, &amp;settings); err != nil {
+		return &quot;&quot;, &quot;&quot;, err
+	}
+	appKey = settings.Data.Settings.ASRConfig.AppKey
+	if appKey == &quot;&quot; {
+		return &quot;&quot;, &quot;&quot;, errors.New(&quot;settings 没给 asr_config.app_key&quot;)
+	}
+	return deviceID, appKey, nil
+}
+
+// ---------------------------------------------------------------- 2. protobuf 帧
+
+func putVarint(buf *bytes.Buffer, value uint64) {
+	for {
+		b := byte(value &amp; 0x7f)
+		value &gt;&gt;= 7
+		if value != 0 {
+			buf.WriteByte(b | 0x80)
+		} else {
+			buf.WriteByte(b)
+			return
+		}
+	}
+}
+
+func putBytes(buf *bytes.Buffer, field int, raw []byte) {
+	if len(raw) == 0 {
+		return
+	}
+	putVarint(buf, uint64(field&lt;&lt;3|2))
+	putVarint(buf, uint64(len(raw)))
+	buf.Write(raw)
+}
+
+// encode 上游请求帧：2=token 3=service 5=method 6=payload 7=audio 8=request_id 9=frame_state
+func encode(token, method, payload string, audio []byte, requestID string, state int) []byte {
+	var buf bytes.Buffer
+	putBytes(&amp;buf, 2, []byte(token))
+	putBytes(&amp;buf, 3, []byte(&quot;ASR&quot;))
+	putBytes(&amp;buf, 5, []byte(method))
+	putBytes(&amp;buf, 6, []byte(payload))
+	putBytes(&amp;buf, 7, audio)
+	putBytes(&amp;buf, 8, []byte(requestID))
+	if state != 0 {
+		putVarint(&amp;buf, uint64(9&lt;&lt;3))
+		putVarint(&amp;buf, uint64(state))
+	}
+	return buf.Bytes()
+}
+
+func readVarint(data []byte, pos int) (uint64, int) {
+	var value uint64
+	var shift uint
+	for {
+		b := data[pos]
+		pos++
+		value |= uint64(b&amp;0x7f) &lt;&lt; shift
+		shift += 7
+		if b&amp;0x80 == 0 {
+			return value, pos
+		}
+	}
+}
+
+// decode 响应帧 → 字段号到值的映射（2=task_id 4=事件 5=状态码 6=状态文本 7=结果 JSON）
+func decode(data []byte) map[int][][]byte {
+	out := map[int][][]byte{}
+	for off := 0; off &lt; len(data); {
+		tag, next := readVarint(data, off)
+		off = next
+		field, wire := int(tag&gt;&gt;3), int(tag&amp;7)
+		switch wire {
+		case 0:
+			val, next := readVarint(data, off)
+			off = next
+			raw := make([]byte, 8)
+			binary.LittleEndian.PutUint64(raw, val)
+			out[field] = append(out[field], raw)
+		case 2:
+			length, next := readVarint(data, off)
+			off = next
+			out[field] = append(out[field], data[off:off+int(length)])
+			off += int(length)
+		case 1:
+			off += 8
+		case 5:
+			off += 4
+		default:
+			return out
+		}
+	}
+	return out
+}
+
+func textOf(msg map[int][][]byte, field int) string {
+	values := msg[field]
+	if len(values) == 0 {
+		return &quot;&quot;
+	}
+	return string(values[0])
+}
+
+func codeOf(msg map[int][][]byte) uint64 {
+	values := msg[5]
+	if len(values) == 0 {
+		return 0
+	}
+	return binary.LittleEndian.Uint64(values[0])
+}
+
+// ---------------------------------------------------------------- 3. 跑一次识别
+
+func readWav(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) &lt; 44 || string(raw[0:4]) != &quot;RIFF&quot; {
+		return nil, errors.New(&quot;不是 WAV 文件&quot;)
+	}
+	for off := 12; off+8 &lt;= len(raw); {
+		id := string(raw[off : off+4])
+		size := int(binary.LittleEndian.Uint32(raw[off+4 : off+8]))
+		if id == &quot;fmt &quot; {
+			channels := binary.LittleEndian.Uint16(raw[off+10 : off+12])
+			rate := binary.LittleEndian.Uint32(raw[off+12 : off+16])
+			bits := binary.LittleEndian.Uint16(raw[off+22 : off+24])
+			if channels != 1 || rate != sampleRate || bits != 16 {
+				return nil, fmt.Errorf(&quot;需要 16kHz/单声道/16bit 的 WAV，实际 %dHz/%dch/%dbit&quot;, rate, channels, bits)
+			}
+		}
+		if id == &quot;data&quot; {
+			end := off + 8 + size
+			if end &gt; len(raw) {
+				end = len(raw)
+			}
+			return raw[off+8 : end], nil
+		}
+		off += 8 + size + size%2
+	}
+	return nil, errors.New(&quot;WAV 里没有 data 段&quot;)
+}
+
+type result struct {
+	Results []struct {
+		Text string `json:&quot;text&quot;`
+	} `json:&quot;results&quot;`
+}
+
+func transcribeOnce(path string) (string, error) {
+	pcm, err := readWav(path)
+	if err != nil {
+		return &quot;&quot;, err
+	}
+	deviceID, appKey, err := getCredentials()
+	if err != nil {
+		return &quot;&quot;, err
+	}
+	requestID := uuid.NewString()
+
+	header := http.Header{}
+	header.Set(&quot;User-Agent&quot;, userAgent)
+	header.Set(&quot;proto-version&quot;, &quot;v2&quot;)
+	header.Set(&quot;x-custom-keepalive&quot;, &quot;true&quot;)
+	target := fmt.Sprintf(&quot;%s?aid=%d&amp;device_id=%s&quot;, wsURL, aid, deviceID)
+	conn, _, err := websocket.DefaultDialer.Dial(target, header)
+	if err != nil {
+		return &quot;&quot;, err
+	}
+	defer conn.Close()
+
+	// ① StartTask
+	if err = conn.WriteMessage(websocket.BinaryMessage, encode(appKey, &quot;StartTask&quot;, &quot;&quot;, nil, requestID, 0)); err != nil {
+		return &quot;&quot;, err
+	}
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		return &quot;&quot;, err
+	}
+	if msg := decode(data); textOf(msg, 4) != &quot;TaskStarted&quot; {
+		return &quot;&quot;, fmt.Errorf(&quot;StartTask 失败: %s %d %s&quot;, textOf(msg, 4), codeOf(msg), textOf(msg, 6))
+	}
+
+	// ② StartSession
+	sessionPayload, _ := json.Marshal(map[string]any{
+		&quot;audio_info&quot;:              map[string]any{&quot;channel&quot;: 1, &quot;format&quot;: &quot;raw&quot;, &quot;sample_rate&quot;: sampleRate},
+		&quot;enable_punctuation&quot;:      true,
+		&quot;enable_speech_rejection&quot;: false,
+		&quot;extra&quot;: map[string]any{
+			&quot;did&quot;: deviceID, &quot;input_mode&quot;: &quot;tool&quot;,
+			&quot;strong_ddc&quot;: true, &quot;use_twopass_retry&quot;: true,
+			&quot;enable_asr_twopass&quot;: true, &quot;enable_asr_threepass&quot;: true,
+			&quot;disable_user_words&quot;: false, &quot;cell_compress_rate&quot;: 8,
+		},
+	})
+	if err = conn.WriteMessage(websocket.BinaryMessage,
+		encode(appKey, &quot;StartSession&quot;, string(sessionPayload), nil, requestID, 0)); err != nil {
+		return &quot;&quot;, err
+	}
+	if _, data, err = conn.ReadMessage(); err != nil {
+		return &quot;&quot;, err
+	}
+	if msg := decode(data); textOf(msg, 4) != &quot;SessionStarted&quot; {
+		return &quot;&quot;, fmt.Errorf(&quot;StartSession 失败: %s %d %s&quot;, textOf(msg, 4), codeOf(msg), textOf(msg, 6))
+	}
+
+	// ③ 后台收结果，主线程按 20ms 一帧送音频
+	text := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() {
+		var last string
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				done &lt;- err
+				return
+			}
+			msg := decode(data)
+			if raw := textOf(msg, 7); raw != &quot;&quot; {
+				var parsed result
+				if json.Unmarshal([]byte(raw), &amp;parsed) == nil {
+					for _, item := range parsed.Results {
+						if item.Text != &quot;&quot; {
+							last = item.Text // 累积文本，最后一条即完整结果
+						}
+					}
+				}
+			}
+			switch textOf(msg, 4) {
+			case &quot;SessionFinished&quot;, &quot;TaskFinished&quot;:
+				text &lt;- last
+				return
+			case &quot;SessionFailed&quot;, &quot;TaskFailed&quot;:
+				done &lt;- fmt.Errorf(&quot;识别失败: %d %s&quot;, codeOf(msg), textOf(msg, 6))
+				return
+			}
+		}
+	}()
+
+	frames := (len(pcm) + frameBytes - 1) / frameBytes
+	for i := 0; i &lt; frames; i++ {
+		start := i * frameBytes
+		end := start + frameBytes
+		if end &gt; len(pcm) {
+			end = len(pcm)
+		}
+		state := 3
+		if i == 0 {
+			state = 1
+		} else if i == frames-1 {
+			state = 9
+		}
+		if err = conn.WriteMessage(websocket.BinaryMessage,
+			encode(&quot;&quot;, &quot;TaskRequest&quot;, &quot;{}&quot;, pcm[start:end], requestID, state)); err != nil {
+			return &quot;&quot;, err
+		}
+		time.Sleep(20 * time.Millisecond) // 按实时速度喂
+	}
+
+	// ④ FinishSession
+	if err = conn.WriteMessage(websocket.BinaryMessage,
+		encode(appKey, &quot;FinishSession&quot;, &quot;&quot;, nil, requestID, 0)); err != nil {
+		return &quot;&quot;, err
+	}
+	select {
+	case out := &lt;-text:
+		return out, nil
+	case err := &lt;-done:
+		return &quot;&quot;, err
+	case &lt;-time.After(25 * time.Second):
+		return &quot;&quot;, errors.New(&quot;等待结果超时&quot;)
+	}
+}
+
+func retryable(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, &quot;service discovery&quot;) || strings.Contains(msg, &quot;失败: 5&quot;)
+}
+
+func transcribe(path string) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt &lt; maxRetry; attempt++ {
+		out, err := transcribeOnce(path)
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+		if !retryable(err) {
+			return &quot;&quot;, err
+		}
+		fmt.Fprintf(os.Stderr, &quot;  [重试 %d/%d] %v\n&quot;, attempt+1, maxRetry-1, err)
+		time.Sleep(600 * time.Millisecond)
+	}
+	return &quot;&quot;, lastErr
+}
+
+func main() {
+	if len(os.Args) &lt; 2 {
+		fmt.Fprintln(os.Stderr, &quot;用法: go run asr_min.go &lt;16k-mono-16bit.wav&gt;&quot;)
+		os.Exit(1)
+	}
+	out, err := transcribe(os.Args[1])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, &quot;失败:&quot;, err)
+		os.Exit(2)
+	}
+	fmt.Println(out)
+}</code></pre>
+
+  <div class="note ok"><b>三份代码的共同骨架</b>（照这个顺序写就不会错）：
+    ① 注册设备 → ② 换 app_key → ③ 连 WS（带 <code>proto-version: v2</code>）→ ④ StartTask → ⑤ StartSession →
+    ⑥ 循环发 20ms 帧（首帧 1 / 中间 3 / 末帧 9）→ ⑦ FinishSession → ⑧ 读到最后一条累积文本。</div>
+
+  <h2 class="sec" id="integrate">4. 集成到你的项目</h2>
+  <h3 id="relay">4.1 网页端为什么要中转</h3>
+  <p>上游需要 3 个无法从浏览器发出的东西：<b>自定义 WS 请求头</b>（<code>proto-version</code> 等）、
+  <b>设备级 app_key</b>（不能下发到前端）、以及 <b>HTTP 注册请求</b>。所以浏览器方案必须是：</p>
+  <div class="diag">浏览器 ──(16k PCM / WebSocket)──▶ 你的服务端 ──(protobuf / WebSocket)──▶ 字节识别服务
+        ↑ 录音、去噪、重采样、实时上屏                 ↑ 管凭据、帧序号、重试、降级</div>
+  <p>本 Demo 就是这么做的：前端只管录音和显示，服务端负责凭据、分帧、重试、降级、纠正词典。</p>
+
+  <h3 id="demoapi">4.2 本 Demo 的接口（可直接对接）</h3>
+  <p>本项目的线上演示：<a href="https://doubao.hsfp.cn" target="_blank" rel="noopener">doubao.hsfp.cn</a>
+     （代码就是本仓库）。下面示例里的 <code>&lt;你的域名&gt;</code> 换成你自己的部署地址即可。</p>
+  <table>
+    <tr><th>接口</th><th>说明</th></tr>
+    <tr><td><code>GET /</code></td><td>录音页面（前端可直接抄 <code>/static/index.html</code> + <code>/static/worklet.js</code>）</td></tr>
+    <tr><td><code>WS /ws?engine=auto|cloud|local</code></td><td>转写会话；<code>auto</code> = 云端优先，失败自动降级本地引擎</td></tr>
+    <tr><td><code>GET /health</code></td><td>状态、设备凭据是否就绪、并发上限、纠正/热词数量</td></tr>
+    <tr><td><code>GET /api/lexicon</code></td><td>纠正词典 + 热词</td></tr>
+    <tr><td><code>POST /api/corrections</code></td><td><code>{"wrong":"识别错的","right":"用户改成的"}</code>：记住并影响后续识别</td></tr>
+    <tr><td><code>POST|DELETE /api/hotwords</code></td><td>手加热词 / 删除</td></tr>
+  </table>
+  <h4>WS 事件协议</h4>
+  <pre><code class="json">// 客户端 → 服务端
+二进制帧          16k 单声道 PCM16（随便怎么切，服务端会攒成 20ms 帧）
+{"type":"stop"}  说完了，收尾并返回最终结果
+{"type":"cancel"} 丢弃本次会话
+
+// 服务端 → 客户端
+{"type":"status","engine":"cloud|local","message":"…"}   状态/降级提示
+{"type":"update","engine":"cloud","lines":[…],"text":"…"} 实时结果（每次给全量，前端整块重渲染）
+{"type":"final","engine":"cloud","lines":[…],"text":"…","error":null}
+{"type":"error","message":"…"}
+
+// lines 里每一行
+{"text":"你好。","start":0.0,"end":1.3,"ts":1792130303000,"final":true,
+ "orig":"你号。","fixes":[["你号。","你好。"]]}   // orig/fixes 只在命中本地纠正时出现</code></pre>
+  <h4>最小前端调用示例（浏览器）</h4>
+  <pre><code class="javascript">// 采集侧：AudioWorklet 把任意采样率转成 16k PCM16（完整实现在 static/worklet.js）
+const ws = new WebSocket(`wss://<你的域名>/ws?engine=auto`);
+ws.binaryType = "arraybuffer";
+
+const ctx = new AudioContext({ sampleRate: 16000 });
+await ctx.audioWorklet.addModule("/static/worklet.js");
+const node = new AudioWorkletNode(ctx, "pcm16", { processorOptions: { targetRate: 16000 } });
+ctx.createMediaStreamSource(await navigator.mediaDevices.getUserMedia({ audio: true })).connect(node);
+node.connect(ctx.destination);
+
+node.port.onmessage = (ev) =&gt; {
+  if (ev.data.pcm &amp;&amp; ws.readyState === 1) ws.send(ev.data.pcm);   // 二进制 PCM 直接发
+};
+ws.onmessage = (ev) =&gt; {
+  const msg = JSON.parse(ev.data);
+  if (msg.type === "update" || msg.type === "final") console.log(msg.text);
+};
+// 说完
+setTimeout(() =&gt; ws.send(JSON.stringify({ type: "stop" })), 3000);</code></pre>
+  <h4>Node 后端批量转写（把服务端当上游用）</h4>
+  <pre><code class="javascript">// 适合「把一批录音文件转成文字」：连本 Demo 的 /ws，喂 PCM，收最终文本
+import fs from "node:fs";
+import WebSocket from "ws";
+
+async function transcribeFile(path) {
+  const pcm = readWav16kMono(path);                       // 见 examples/asr_min.js 的 readWav
+  const ws = new WebSocket("wss://<你的域名>/ws?engine=auto");
+  return new Promise((resolve, reject) =&gt; {
+    let done = null;
+    ws.on("open", async () =&gt; {
+      for (let i = 0; i &lt; pcm.length; i += 640) {
+        ws.send(pcm.subarray(i, i + 640));
+        await new Promise((r) =&gt; setTimeout(r, 20));      // 按实时速度喂（也可更快）
+      }
+      ws.send(JSON.stringify({ type: "stop" }));
+    });
+    ws.on("message", (raw) =&gt; {
+      const msg = JSON.parse(raw);
+      if (msg.type === "final") { done = msg; resolve(msg.text); ws.close(); }
+      if (msg.type === "error") reject(new Error(msg.message));
+    });
+    ws.on("close", () =&gt; { if (!done) reject(new Error("连接提前关闭")); });
+  });
+}</code></pre>
+
+  <h3 id="production">4.3 生产环境注意事项</h3>
+  <table>
+    <tr><th>点</th><th>建议</th></tr>
+    <tr><td>凭据缓存</td><td><code>device_id</code> + <code>app_key</code> 落盘复用（600 权限），别每次请求都重新注册</td></tr>
+    <tr><td>重试</td><td><code>50700000</code> 是随机抖动（约 1/5），整段重试 3~4 次；<code>40200011</code> 不要重试（配额满）</td></tr>
+    <tr><td>并发</td><td>所有客户端共享同一个 app_key 的配额，服务端做信号量（本 Demo 默认 3 路）</td></tr>
+    <tr><td>帧节奏</td><td>按实时速度喂即可（20 ms/帧 = 32 KB/s）；一次性灌太快容易触发异常</td></tr>
+    <tr><td>末帧</td><td>实时流不知道哪帧是最后一帧 → <b>压一帧</b>，收尾时把压着的这帧标 <code>9</code> 再发 FinishSession</td></tr>
+    <tr><td>安全</td><td>不要在前端暴露 app_key；服务端加鉴权（本 Demo 用 API key / 访问控制即可）</td></tr>
+    <tr><td>合规</td><td>这是未公开的内部接口，接口可能变更、风控可能封禁；正式产品请用官方接口（见下节）</td></tr>
+  </table>
+
+  <h2 class="sec" id="offline">5. 离线 / 本地方案</h2>
+  <p>豆包的离线模型拿不到（<a href="#offline-doubao">见 1.6</a>），所以"断网也能用"要靠自己搭。三种可行路线：</p>
+  <table>
+    <tr><th>方案</th><th>特点</th><th>适合</th></tr>
+    <tr><td><b>FunASR</b>（ModelScope / 阿里）</td>
+        <td>中文效果好、带标点与 VAD、有流式模型；CPU 上约 1.5~2 倍实时；本机已在跑</td>
+        <td>中文为主的自托管</td></tr>
+    <tr><td><b>sherpa-onnx</b></td>
+        <td>纯 C++/ONNX 运行时，模型小、启动快，支持中/英/日/韩等多语种与流式；跨平台</td>
+        <td>要真正端侧、多语种</td></tr>
+    <tr><td><b>whisper.cpp / faster-whisper</b></td>
+        <td>多语种（含日语）最强，代价是模型大、CPU 慢、实时性差</td>
+        <td>离线文件转写、多语种</td></tr>
+  </table>
+  <h3>本 Demo 的本地兜底（已经接好了）</h3>
+  <p>服务端复用了本机已有的 FunASR 引擎（<code>/stream</code> 流式接口），云端失败时自动接管：</p>
+  <pre><code class="sh"># .env
+DOUBAO_LOCAL_ENGINE=http://127.0.0.1:4271        # 本地 FunASR 引擎
+DOUBAO_LOCAL_ENGINE_TOKEN=…                      # 引擎的 x-engine-token
+DOUBAO_CLOUD_RETRY=2                             # 云端抖动时的重连次数
+DOUBAO_CONTEXT=1                                 # 是否把热词上下文带给上游
+
+# 选择引擎
+wss://<你的域名>/ws?engine=auto    # 默认：云端优先，失败降级本地
+wss://<你的域名>/ws?engine=cloud   # 只用云端
+wss://<你的域名>/ws?engine=local   # 只用本地（离线可用）</code></pre>
+  <h3>自己搭一个本地 ASR（FunASR 最小示例）</h3>
+  <pre><code class="python"># 引擎侧（本机 127.0.0.1:4271 在跑的就是这套）：FunASR 的流式 paraformer + VAD + 标点
+from funasr import AutoModel
+
+model = AutoModel(model="iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online",
+                  vad_model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+                  punc_model="iic/punc_ct-transformer_cn-en-common-vocab471067-large")
+
+cache, text = {}, ""
+for chunk in pcm_chunks:                    # 每块 16k/单声道/PCM16（建议 600ms）
+    import numpy as np
+    audio = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+    res = model.generate(input=audio, cache=cache, is_final=False, chunk_size=[0, 10, 5])
+    text += "".join(r.get("text", "") for r in (res or []))
+print(text)</code></pre>
+  <h3>要日语 / 多语种</h3>
+  <pre><code class="sh"># sherpa-onnx：下载中日英模型后直接跑（离线、无网络依赖）
+pip install sherpa-onnx
+# 例：模型目录里通常带 run.sh，或用官方 python api：
+python -m sherpa_onnx.offline_recognizer --tokens tokens.txt --paraformer model.onnx audio.wav</code></pre>
+
+  <h2 class="sec" id="faq">6. 常见问题</h2>
+  <h4>Q：为什么我自己连不上，一直 50700000？</h4>
+  <p>上游随机抖动（实测约 1/5），重试整段即可。如果重试也一直失败，可能是接口变了或被风控，换新设备试试、或改用本地引擎。</p>
+  <h4>Q：直接用 <code>whisper-1</code> 模型名行不行？</h4>
+  <p>不行，这不是 OpenAI 接口。字段 5 是固定的方法名，音频字段是裸 PCM/Opus，不解析 multipart。</p>
+  <h4>Q：能不能不注册设备、硬编码一个 app_key？</h4>
+  <p>不建议：app_key 按设备下发且会轮换，硬编码很快就失效；而且那属于拿别人的凭据。</p>
+  <h4>Q：识别结果能拿到逐字时间吗？</h4>
+  <p>能，在 <code>results[].alternatives[].words[]</code> 里（注意 <code>end_time</code> 偏大，需要按 <a href="#protocol">1.3</a> 的坑校正）。</p>
+  <h4>Q：能做成 OpenAI 兼容的 <code>/v1/audio/transcriptions</code> 吗？</h4>
+  <p>能，服务端包一层即可：接收 multipart → 转 16k PCM → 走本节协议 → 返回 <code>{"text": ...}</code>。
+  本 Demo 目前只提供了 WebSocket 接口，需要 HTTP 版可以照着 <a href="#demoapi">4.2</a> 的协议自己加。</p>
+
+  <footer>
+    本文所有结论均来自对公开安装包的分析与实测（2026-10-16）。项目与腾讯、字节跳动、豆包均无隶属关系；
+    接口为未公开的内部接口，仅供技术研究，请勿用于对外商业产品。相关代码示例按 MIT 使用。<br>
+    <a class="ghlink" href="__GITHUB_URL__" target="_blank" rel="noopener" style="margin-top:10px"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span>GitHub · 源码与问题反馈</span></a>
+  </footer>
+</main>
+</div>
+
+<script>
+document.querySelectorAll("pre").forEach((pre) => {
+  const btn = document.createElement("button");
+  btn.className = "copy";
+  btn.textContent = "复制";
+  btn.onclick = async () => {
+    const code = pre.querySelector("code").innerText;
+    try { await navigator.clipboard.writeText(code); btn.textContent = "已复制"; }
+    catch (_) { btn.textContent = "复制失败"; }
+    setTimeout(() => (btn.textContent = "复制"), 1500);
+  };
+  pre.appendChild(btn);
+});
+</script>
+</body>
+</html>
