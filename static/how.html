@@ -117,6 +117,7 @@
   <a href="#production">4.3 生产环境注意事项</a>
   <a href="#diar">5. 说话人分离（可选）</a>
   <a href="#offline">6. 离线 / 本地方案</a>
+  <a href="#offline-inside">6.1 离线引擎内部是怎么做的</a>
   <a href="#faq">7. 常见问题</a>
 </aside>
 
@@ -380,8 +381,36 @@ up_proj.bin / down_proj.bin / v_proj.bin / swiglu.bin / o_proj ...   权重张�
 
 # 参数必须是小写 sdk_version（写 SdkVersion 会报 missing required parameter），只能 GET（POST 404）
 # sdk_version 就是“面板版本”，值越大条目越多：1.0.2→3、15.0.0→875、25.0.0→1128（上限）</code></pre>
-  <p>1128 个模型里语音相关的 19 个。其中 <code>lv_asr_support</code> 是<b>明文 ONNX 全套</b>（另一个
-  <code>lv_grow_voice_local_asr</code> 是 7z 套 SAMI 私有容器，需要闭源引擎，没拿它）：</p>
+  <h4>这条链路是怎么找到的（可复现）</h4>
+  <ol>
+    <li>macOS 客户端主程序里有 <code>ASROfflineModelMetaInfoService.swift</code>、<code>ASROfflineModelTTNetRequest</code>
+        （TTNet 是字节的网络库），顺着字符串邻域找到两个 TTNet 服务名
+        <code>com.wave.offline-model.metainfo-service</code> / <code>com.wave.offline-model.metainfo-head</code>；</li>
+    <li>同一片邻域里出现域名 <code>https://effect.snssdk.com</code> 与路径 <code>/model/api/arithmetics</code>
+        （还有解析字段 <code>fileDownloadURLs</code>、<code>installRelativePath</code>、<code>componentVersionKey</code>）；</li>
+    <li>裸调该路径，服务端直接报 <code>params check error: expr_path=SdkVersion, cause=missing required parameter</code>——
+        按提示试出参数名必须是小写 <code>sdk_version</code>（写成 <code>SdkVersion</code> 反而一直报缺参数），POST 一律 404（只收 GET）；</li>
+    <li>把 <code>sdk_version</code> 调大就能看出它是“面板版本”：1.0.2→3 个、15.0.0→875 个、25.0.0→1128 个（上限）。</li>
+  </ol>
+  <p><b>经验</b>：这类接口的报错比文档好用——服务端报什么字段名，就原样试什么字段名。</p>
+  <h4>同一批物料里有两种封装，能力完全不同</h4>
+  <table>
+    <tr><th>例子</th><th>封装</th><th>能不能直接用</th></tr>
+    <tr><td><code>lv_asr_support</code>（307 MB）</td>
+        <td>zip → <b>明文 ONNX</b>（encoder / decoder / classifier / punc + 词表 + ITN FST）</td>
+        <td><span class="pill ok">能</span>　onnxruntime 直接跑，本项目用的就是它</td></tr>
+    <tr><td><code>lv_grow_voice_local_asr</code>（297 MB）<br><code>lv_speech_asr_mobile</code>（343 MB）</td>
+        <td>7z / 裸文件 → 单个 <code>*.model</code></td>
+        <td><span class="pill no">不能</span>　SAMI 私有容器：31 字节头 + 熵 ≈ 8.0 的加密正文，要闭源 Flute 引擎</td></tr>
+    <tr><td><code>mobile_asr_transformer_ctc_chn</code>（3.9 MB）</td>
+        <td>裸文件，魔数直接就是 <code>SAMI</code></td>
+        <td><span class="pill no">不能</span>　同上</td></tr>
+  </table>
+  <p>同批还有 <code>lv_asr_cut_mobile</code>、<code>online_mobile_asr_transformer_pipeline(_douyin)</code>、
+  KWS 唤醒词（<code>kws_chn_hanzi</code> 等）、<code>unet_denoise_44k_speech</code> 降噪等，
+  <code>--list</code> 一共能列出 <b>24 个语音相关模型</b>。挑法很简单：<b>看 zip 里有没有 <code>.onnx</code></b>——
+  拉取脚本会自动判断，遇到私有容器会明确告诉你“这个用不了”。</p>
+  <p>我们要的这套（<code>lv_asr_support</code>，解开就是完整的 ASR 流水线）：</p>
   <table>
     <tr><th>文件</th><th>大小</th><th>作用</th></tr>
     <tr><td><code>asr-model-encoder.onnx</code></td><td>101 MB</td><td><code>speech[1,T,560]</code> → <code>enc[1,T,512]</code></td></tr>
@@ -391,6 +420,24 @@ up_proj.bin / down_proj.bin / v_proj.bin / swiglu.bin / o_proj ...   权重张�
     <tr><td><code>asr-model-token.txt</code></td><td>75 KB</td><td>8404 个 token（<code>&lt;blank&gt; 0</code> 空格分隔）</td></tr>
     <tr><td><code>asr-itn-fst.fst</code></td><td>540 KB</td><td>逆文本归一化 FST</td></tr>
   </table>
+  <p>用 onnxruntime 打开就能读出全部输入输出——这是判断“能不能自己跑”的依据：</p>
+  <table>
+    <tr><th>模型</th><th>输入</th><th>输出</th></tr>
+    <tr><td>encoder</td><td><code>speech[1,T,560]</code> f32、<code>speech_lengths[1]</code> i32</td>
+        <td><code>enc[1,T,512]</code>、<code>enc_len</code></td></tr>
+    <tr><td>decoder</td><td><code>enc</code>、<code>enc_len</code></td>
+        <td><code>logits[1,L,8404]</code>、<code>token_num</code>、<code>us_alphas</code>、<code>us_cif_peak</code></td></tr>
+    <tr><td>classifier</td><td><code>enc</code>、<code>enc_len</code></td><td><code>quality_scores[1,1]</code></td></tr>
+    <tr><td>punc</td><td><code>inputs[1,T]</code> i32（字符 id）、<code>text_lengths</code></td><td><code>logits[1,L,3]</code></td></tr>
+  </table>
+  <p><code>us_cif_peak</code> 是 CIF 的峰值序列，同时是“何时吐出一个字”的判据——和 Flute 里
+  <code>ntp_cif/cif_calculator</code> 是同一套思路。而 <code>strategy.json</code> 漏出了产品侧策略：</p>
+  <pre><code class="json">{ "dispatcher": { "ratio": 0.33, "max_counts": 5, "quality_score": 0.83 },
+  "vad_strategy": { "max_slice_duration": 30, "min_slice_duration": 10 },
+  "sentence_config": { "max_time_interval_ms": 300, "split_size": 16 } }</code></pre>
+  <p>意思是：原始产品把长音频切成 10~30s 片，同一片可能用不同切点跑<b>最多 5 次</b>，再用 classifier 的质量分
+  （阈值 0.83）挑最好的一份——这也解释了包里为什么会带一个“质量分模型”。本项目简化成
+  <b>停顿断句 + 单次解码 + 质量分只做展示</b>（存在每句话的 <code>quality</code> 里，导出 JSON 能看到）。</p>
   <p>输入 <b>560 = 80 维 mel × 7（LFR m=7,n=6）</b>，和 FunASR Paraformer 同构；<code>us_cif_peak</code> 说明是
   <b>CIF / ntp_cif</b>（和豆包输入法 Flute 里的模块同源），只是这里是明文 ONNX，<b>onnxruntime 直接能跑</b>。</p>
   <div class="note ok"><b>实测（本机 CPU，纯 numpy 前端 + onnxruntime）：</b>
@@ -402,6 +449,21 @@ up_proj.bin / down_proj.bin / v_proj.bin / swiglu.bin / o_proj ...   权重张�
   <pre><code class="sh"># 一条命令把模型拉齐（约 310MB，走公开 CDN）
 ./tools/fetch_offline_asr_models.sh            # 默认取 lv_asr_support
 ./tools/fetch_offline_asr_models.sh --list     # 先看看有哪些语音模型</code></pre>
+  <h4>前端特征怎么对上（最容易翻车的一步）</h4>
+  <pre><code class="text">PCM16 / 16k / 单声道
+  → 80 维 log-mel：25ms 窗、10ms 步长、HTK mel（1127·ln(1+f/700)）、取 log
+  → LFR(7,6)：连续 7 帧拼成 1 帧、步长 6 → 560 维（80 × 7 = 560）
+  → 逐句归一化：(x − mean) / (std + 1e−10)          ← 逐句 CMVN
+  → encoder → decoder → argmax → 8404 词表拼字（跳过 id 0/1/2，去掉 @@ 后缀）</code></pre>
+  <div class="note"><b>说清楚：</b>归一化那一步是<b>试出来的</b>——包里没带 CMVN 统计量，直接喂原始 log-mel 会出现
+  重复字（「…接口测试你好今天阳光很好」），换成逐句均值方差归一化后中文才全对。
+  也就是说这套前端的正确性只在这几个测试音频上验证过，换模型版本或换语种需要重新校。</div>
+  <div class="note bad"><b>边界与提醒：</b>
+    ① 这批模型是字节 Effect 算法分发里的公开物料，<b>不是</b>豆包输入法客户端自己那份
+       （客户端要的模型名是加密的 <code>name_sec</code>，扒不出它选的是哪个），只是架构同源、能力够用；
+    ② 它属于厂商的模型资产，本项目仅用于技术研究与自用演示——<b>别商用、别二次分发模型文件</b>；
+    ③ 后处理（ITN、热词、标点的细节）都有自己的模型/资源，本项目<b>只接了标点</b>。
+  </div>
 
   <h2 class="sec" id="auth">2. 凭据从哪来（为什么不用登录）</h2>
   <p>豆包输入法没有任何账号体系参与语音识别，身份是<b>「应用身份 + 设备身份」</b>：</p>
@@ -1570,6 +1632,61 @@ async function transcribeFile(path) {
     <tr><td><b>离线</b></td><td><code>engine=offline</code>：只用本机 ONNX 模型</td><td>断网可用、有真实句级时间戳与质量分；英文弱一些</td></tr>
   </table>
   <p>每次会话的分隔线上会标出用了哪档（如 <code>2026-10-17 03:33 · 离线 · 录音 43s / 识别到 42s</code>），方便回溯对比。</p>
+  <h3 id="offline-inside">6.1 离线引擎内部是怎么做的</h3>
+  <p>它是个独立进程（默认 <code>127.0.0.1:4272</code>），<b>接口形状和 FunASR 引擎完全一致</b>，
+  所以 server.py 里两套本地引擎复用同一个客户端基类 <code>ChunkEngineSession</code>——
+  换引擎只是换 URL 和“结果怎么翻译成前端要的行”。</p>
+  <pre><code class="text">浏览器 ──20ms PCM 帧──▶ server.py ──100ms 一批──▶ offline_engine.py
+                          │                        ├─ 能量 VAD 切句
+                          │                        ├─ encoder → decoder → argmax（整段）
+                          ◀─ 定稿句（时间戳/质量分）─┤  punc 模型补标点
+                          ◀─ 未定稿片段（每约1.2s）─┘
+                          └─ 转成前端的 update / final 协议
+
+POST /stream               → {"session_id": …}
+POST /stream/{sid}/chunk   → {"sentences":[{start,end,text,quality}], "partial":"…", "audio_seconds": …}
+POST /stream/{sid}/finish  → 全部句子
+GET  /health               → 是否就绪 / token 数 / 是否带标点 / VAD 参数</code></pre>
+  <h4>切句与“未定稿”（体验的关键）</h4>
+  <table>
+    <tr><th>参数</th><th>值</th><th>为什么这么定</th></tr>
+    <tr><td>断句停顿</td><td>0.6s</td><td>太短会把逗号当句号，太长一句话半分钟不出</td></tr>
+    <tr><td>单段上限</td><td>12s</td><td>解码整段跑，太长则慢、实时性差</td></tr>
+    <tr><td>最短语音</td><td>0.3s</td><td>丢掉咳嗽、碰麦的碎片</td></tr>
+    <tr><td>未定稿间隔</td><td>约 1.2s</td><td>说话中就上屏；缓冲超过 8s 不再出未定稿，省 CPU</td></tr>
+    <tr><td>底噪估计</td><td>自适应</td><td>静音帧 EMA 更新、语音帧几乎不动；阈值 = max(0.006, 2.2 × 底噪)</td></tr>
+    <tr><td>并发</td><td>推理串行</td><td>CPU 上并发跑只会互相拖慢，加锁排队</td></tr>
+  </table>
+  <h4>实测效果（同一段音频跑两档）</h4>
+  <table>
+    <tr><th>音频</th><th>在线 CER</th><th>离线 CER</th><th>差别在哪</th></tr>
+    <tr><td>fixture-6s（中文）</td><td>0.000</td><td>0.000</td><td>都全对；离线反而更快（1.0s vs 1.4s）</td></tr>
+    <tr><td>fixture-2s（中文）</td><td>0.000</td><td>0.000</td><td>离线按停顿切成两句、标点不如云端完整</td></tr>
+    <tr><td>中英混说</td><td>0.141</td><td>0.152</td><td>中文都对；<b>英文云端明显更完整</b>，离线会串字</td></tr>
+    <tr><td><b>平均</b></td><td colspan="2">0.047 vs 0.051</td><td>越小越好；中日英以外的语种离线直接乱码</td></tr>
+  </table>
+  <pre><code class="sh">./venv/bin/python tests/compare_engines.py     # 复现这张表（真连两个引擎跑）</code></pre>
+  <h4>怎么确认它真的没联网 / 怎么排障</h4>
+  <pre><code class="sh">curl -s http://127.0.0.1:4272/health        # 引擎自己的健康检查
+tail -f /var/log/doubao-offline-asr.log     # 每句都有「定稿 1.23-3.45s（12 字，质量 0.683）」
+/root/scripts/doubao-asr-web-ctl.sh offline        # 状态
+/root/scripts/doubao-asr-web-ctl.sh offline-test   # 不进服务，直接用仓库音频自测</code></pre>
+  <table>
+    <tr><th>现象</th><th>原因 / 处理</th></tr>
+    <tr><td>页面上「离线」变灰、title 写“不可用”</td><td>引擎没起或模型没下：<code>systemctl status doubao-offline-asr</code></td></tr>
+    <tr><td><code>/health</code> 的 <code>reason</code> 是“缺模型文件”</td><td><code>./tools/fetch_offline_asr_models.sh</code></td></tr>
+    <tr><td>识别出来重复/串字</td><td>前端归一化或 LFR 参数不对；先用 <code>--selftest</code> 跑仓库音频确认</td></tr>
+    <tr><td>整段没反应</td><td>底噪被环境噪声抬太高；看日志有没有“定稿”，必要时调最短语音/阈值</td></tr>
+    <tr><td>想临时换 FunASR</td><td><code>?engine=local</code>；或把 <code>DOUBAO_OFFLINE_ENGINE</code> 留空让 auto 降级到 FunASR</td></tr>
+  </table>
+  <h4>还没做的（说清楚）</h4>
+  <ul>
+    <li><b>真·端侧</b>：现在“离线”指的是<b>推理在本机服务器、不联网</b>；要完全不出服务端，得把 encoder/decoder
+        搬进浏览器 WASM（模型 160MB+，加载与内存都考验）</li>
+    <li><b>ITN</b>：<code>asr-itn-fst.fst</code> 还没接（数字/单位/日期书面化）</li>
+    <li><b>热词</b>：离线模型输入里没有 context 字段，目前只能事后同义替换；原始产品走的是“多次解码 + 质量分挑选”</li>
+    <li><b>流式编码器</b>：现在是整段解码 + VAD 切句，做不到云端那种逐字上屏</li>
+  </ul>
   <h3>离线引擎怎么跑</h3>
   <pre><code class="sh"># 1) 下模型（约 310MB，公开 CDN；详见 1.7）
 ./tools/fetch_offline_asr_models.sh
