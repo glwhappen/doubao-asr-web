@@ -39,6 +39,8 @@ FILL_GAP_SECONDS = float(os.environ.get("DOUBAO_DIAR_FILL_GAP", "10"))
 ONLINE_THRESHOLD = float(os.environ.get("DOUBAO_DIAR_ONLINE_THRESHOLD", "0.4"))
 # 太短的句子算出的声纹不可靠，直接继承上一位说话人
 ONLINE_MIN_SECONDS = float(os.environ.get("DOUBAO_DIAR_ONLINE_MIN", "0.6"))
+# 与"声纹库"里已注册的人比对时的阈值：比会话内聚类更严一点，避免认错人
+GALLERY_THRESHOLD = float(os.environ.get("DOUBAO_DIAR_GALLERY_THRESHOLD", "0.45"))
 MIN_SPEAKER_SECONDS = float(os.environ.get("DOUBAO_DIAR_MIN_SPEAKER_SECONDS", "1.0"))  # 短于此的簇会被并掉
 
 
@@ -234,13 +236,35 @@ class SpeakerTracker:
     录音结束后仍会用整段分离跑一遍做校正（通常更准）。
     """
 
-    def __init__(self, threshold: float = ONLINE_THRESHOLD):
+    def __init__(self, threshold: float = ONLINE_THRESHOLD, gallery=None):
         self.threshold = threshold
         self._extractor = None
         self._failed = False
         self.centroids: list[tuple[int, "object"]] = []   # [(speaker, 归一化向量)]
         self.last_speaker: int | None = None
-        self.seen: dict[tuple, int] = {}                   # (start,end) -> speaker，避免重复算
+        self.seen: dict[tuple, tuple] = {}                 # (start,end) -> (speaker, name)
+        # 声纹库：[(姓名, 归一化向量)]，由浏览器本地保存、每次会话开始发过来
+        self.gallery: list[tuple[str, "object"]] = []
+        self.name_to_speaker: dict[str, int] = {}
+        for item in (gallery or []):
+            self.add_voiceprint(item.get("name"), item.get("vector"))
+
+    def add_voiceprint(self, name, vector):
+        """把一个已注册的声纹加进来（向量可以是 list，也可以是 numpy 数组）。"""
+        import numpy as np
+        if not name or vector is None:          # 注意：numpy 数组不能直接做真假判断
+            return False
+        try:
+            vec = np.asarray(vector, dtype="float32").ravel()
+        except (TypeError, ValueError):
+            return False
+        if vec.size < 8:
+            return False
+        norm = float((vec ** 2).sum()) ** 0.5
+        if not norm:
+            return False
+        self.gallery.append((str(name), vec / norm))
+        return True
 
     def available(self) -> bool:
         if self._extractor is not None:
@@ -269,12 +293,16 @@ class SpeakerTracker:
         norm = float((vec ** 2).sum()) ** 0.5
         return vec / (norm + 1e-9) if norm else None
 
-    def assign(self, pcm: bytes, start: float | None, end: float | None) -> int | None:
-        """给 [start,end] 这段音频定一个说话人编号（1 起）；算不出就返回上一位或 None。"""
+    def assign(self, pcm: bytes, start: float | None, end: float | None):
+        """给 [start,end] 这段音频定说话人，返回 (编号, 姓名)；认不出姓名时姓名为 None。
+
+        先和**声纹库**里已注册的人比（认得就直接用真名，跨录音有效），
+        再和本次会话内已有的说话人比，都不像就新建一位。
+        """
         import numpy as np
 
         if start is None or end is None or end - start < ONLINE_MIN_SECONDS:
-            return self.last_speaker
+            return (self.last_speaker, None) if self.last_speaker else None
         key = (round(float(start), 1), round(float(end), 1))
         if key in self.seen:
             return self.seen[key]
@@ -284,7 +312,7 @@ class SpeakerTracker:
         begin = max(0, int(start * 16000))
         finish = min(len(pcm) // 2, int(end * 16000))
         if finish - begin < 16000 * ONLINE_MIN_SECONDS:
-            return self.last_speaker
+            return (self.last_speaker, None) if self.last_speaker else None
         try:
             self._load()
             samples = np.frombuffer(pcm[begin * 2:finish * 2], dtype="int16").astype("float32") / 32768.0
@@ -292,9 +320,36 @@ class SpeakerTracker:
         except Exception:                     # noqa: BLE001
             self._failed = True
             log.exception("在线声纹提取失败，本次录音不再追踪说话人")
-            return self.last_speaker
+            return (self.last_speaker, None) if self.last_speaker else None
         if vec is None:
-            return self.last_speaker
+            return (self.last_speaker, None) if self.last_speaker else None
+
+        speaker, name = self.match_vector(vec)
+        self.seen[key] = (speaker, name)
+        self.last_speaker = speaker
+        return speaker, name
+
+    def match_vector(self, vec):
+        """一个声纹向量 → (说话人编号, 姓名)。
+
+        ① 先和声纹库里已注册的人比（跨录音有效，认得就用真名）
+        ② 认不出再和本次会话内已有的人比，都不像就新建一位
+        """
+        import numpy as np
+
+        name, name_sim = None, -1.0
+        for candidate, centroid in self.gallery:
+            sim = float(np.dot(vec, centroid))
+            if sim > name_sim:
+                name, name_sim = candidate, sim
+        if name is not None and name_sim >= GALLERY_THRESHOLD:
+            speaker = self.name_to_speaker.get(name)
+            if speaker is None:
+                speaker = len(self.centroids) + 1
+                self.centroids.append((speaker, vec))
+                self.name_to_speaker[name] = speaker
+            log.info("声纹识别：认得「%s」（相似度 %.2f）", name, name_sim)
+            return speaker, name
 
         best, best_sim = None, -1.0
         for speaker, centroid in self.centroids:
@@ -302,19 +357,20 @@ class SpeakerTracker:
             if sim > best_sim:
                 best, best_sim = speaker, sim
         if best is not None and best_sim >= self.threshold:
-            speaker = best
             for i, (spk, centroid) in enumerate(self.centroids):   # 中心向量做一点平滑
-                if spk == speaker:
+                if spk == best:
                     merged = 0.8 * centroid + 0.2 * vec
                     self.centroids[i] = (spk, merged / (float((merged ** 2).sum()) ** 0.5 + 1e-9))
-        else:
-            speaker = len(self.centroids) + 1
-            self.centroids.append((speaker, vec))
-            log.info("在线跟踪：新增说话人 %d（最像的只有 %.2f）", speaker, best_sim)
-        self.seen[key] = speaker
-        self.last_speaker = speaker
-        return speaker
+            return best, None
+        speaker = len(self.centroids) + 1
+        self.centroids.append((speaker, vec))
+        log.info("在线跟踪：新增说话人 %d（最像的只有 %.2f）", speaker, best_sim)
+        return speaker, None
 
     @property
     def count(self) -> int:
         return len(self.centroids)
+
+    def vectors(self) -> dict:
+        """本次会话里每个说话人的中心向量（给前端「注册声纹」用）。"""
+        return {str(spk): [round(float(x), 4) for x in vec] for spk, vec in self.centroids}

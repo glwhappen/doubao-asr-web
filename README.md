@@ -10,7 +10,8 @@
 - ✏️ **会学你的纠正**：点句子直接改，改法记住并影响后续识别
 - 🔒 **数据不出本机浏览器**：转写与词库都存 `localStorage`，多人共用一份部署也互不覆盖
 - 🧩 **可集成**：服务端是标准 WebSocket，附 Python / Node / Go 三份最小客户端
-- 🗣️ **说话人分离**（可选）：多人对话时**边录边给每句标「谁说的」**，可给说话人改名；本地模型，离线可用
+- 🗣️ **说话人分离 + 声纹库**（可选）：多人对话时**边录边给每句标「谁说的」**；
+  注册过声音的人以后**自动认出来并用真名标注**（跨录音有效，声纹只存本机）
 - 🌗 **亮/暗主题**、🛟 **离线兜底**（云端不可用时自动切本地 FunASR）
 
 > ⚠️ **先看免责声明**：本项目调用的是豆包输入法客户端内部的**未公开接口**，仅供技术研究与个人自用。
@@ -130,6 +131,7 @@ AudioWorklet 采集 16k/mono/PCM16
 | 数据 | 位置 | 行为 |
 |---|---|---|
 | 转写内容（含时间戳） | `localStorage['doubao-asr-transcript']` | 每次识别追加，插入每次录音的时间分隔线；只有点「清空」才删 |
+| 声纹库 | `localStorage['doubao-asr-voiceprints']` | 已注册的说话人姓名 + 512 维声纹；用于跨录音自动认人 |
 | 纠正词典 + 热词 | `localStorage['doubao-asr-lexicon']` | 点句子改字即学会；面板可删单条/清空 |
 | 主题偏好 | `localStorage['doubao-asr-theme']` | 亮 / 暗 |
 
@@ -159,6 +161,7 @@ AudioWorklet 采集 16k/mono/PCM16
 | `DOUBAO_DIAR_THRESHOLD` | `0.7` | 整段聚类阈值（越小越容易并成一个人） |
 | `DOUBAO_DIAR_ONLINE_THRESHOLD` | `0.4` | 在线追踪的余弦阈值 |
 | `DOUBAO_DIAR_ONLINE_MIN` | `0.6` | 短于这个秒数的句子不做声纹，继承上一位 |
+| `DOUBAO_DIAR_GALLERY_THRESHOLD` | `0.45` | 与声纹库比对时的余弦阈值（比会话内聚类更严） |
 | `DOUBAO_DIAR_MIN_ON` / `MIN_OFF` | `0.3` / `0.5` | 分割片段的最短/最短间隔 |
 | `DOUBAO_DIAR_MAX_SECONDS` | `600` | 超过这个时长就跳过分离，防卡死 |
 
@@ -315,6 +318,7 @@ WantedBy=multi-user.target
 # 端到端验证（需要服务在跑）
 ./venv/bin/python tests/verify_session_lexicon.py    # 词库只对本次会话生效
 ./venv/bin/python tests/verify_diarization.py        # 两段不同人的音频 → 标签不同
+./venv/bin/python tests/verify_voiceprint.py         # 注册声纹 → 下次自动认出这个人
 
 # 改完示例代码后重新生成原理页
 ./venv/bin/python tools/build_how_page.py

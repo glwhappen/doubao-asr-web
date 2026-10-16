@@ -69,5 +69,56 @@ class AssignSpeakersCase(unittest.TestCase):
         self.assertTrue(merged)
 
 
+class VoiceprintCase(unittest.TestCase):
+    """声纹库匹配（不需要模型：直接喂造出来的向量）。"""
+
+    def setUp(self):
+        import numpy as np
+        self.np = np
+        self.tracker = diarization.SpeakerTracker()
+
+    @staticmethod
+    def vec(*values):
+        import numpy as np
+        v = np.array(values, dtype="float32")
+        return v / (float((v ** 2).sum()) ** 0.5)
+
+    def test_enrolled_voice_is_recognized(self):
+        self.tracker.add_voiceprint("甲", self.vec(1, 0, 0, 0, 0, 0, 0, 0))
+        spk, name = self.tracker.match_vector(self.vec(0.99, 0.02, 0, 0, 0, 0, 0, 0))
+        self.assertEqual(name, "甲")
+        self.assertEqual(spk, 1)
+
+    def test_stranger_gets_new_speaker_not_a_name(self):
+        """陌生人不能被硬塞成已注册的名字；他自己占一个会话内编号。"""
+        self.tracker.add_voiceprint("甲", self.vec(1, 0, 0, 0, 0, 0, 0, 0))
+        spk, name = self.tracker.match_vector(self.vec(0, 1, 0, 0, 0, 0, 0, 0))
+        self.assertIsNone(name)
+        self.assertEqual(self.tracker.count, 1)       # 会话内建立 1 个说话人
+        # 之后「甲」本人出现 → 拿另一个编号，并且带上名字
+        spk2, name2 = self.tracker.match_vector(self.vec(1, 0, 0, 0, 0, 0, 0, 0))
+        self.assertEqual(name2, "甲")
+        self.assertNotEqual(spk, spk2)
+        self.assertEqual(self.tracker.count, 2)
+
+    def test_same_person_twice_keeps_one_speaker(self):
+        spk1, _ = self.tracker.match_vector(self.vec(1, 0, 0, 0, 0, 0, 0, 0))
+        spk2, _ = self.tracker.match_vector(self.vec(0.97, 0.05, 0, 0, 0, 0, 0, 0))
+        self.assertEqual(spk1, spk2)
+        self.assertEqual(self.tracker.count, 1)
+
+    def test_bad_voiceprint_is_ignored(self):
+        self.assertFalse(self.tracker.add_voiceprint("空", []))
+        self.assertFalse(self.tracker.add_voiceprint("短", [1, 2]))
+        self.assertFalse(self.tracker.add_voiceprint("", self.vec(1, 0, 0, 0, 0, 0, 0, 0)))
+        self.assertEqual(self.tracker.count, 0)
+
+    def test_vectors_exports_centroids(self):
+        self.tracker.match_vector(self.vec(1, 0, 0, 0, 0, 0, 0, 0))
+        vectors = self.tracker.vectors()
+        self.assertEqual(list(vectors), ["1"])
+        self.assertEqual(len(vectors["1"]), 8)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

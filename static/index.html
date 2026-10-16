@@ -102,6 +102,7 @@
   .spk4{color:#a855f7;border-color:rgba(168,85,247,.45);background:rgba(168,85,247,.10)}
   .spk5{color:#d64545;border-color:rgba(214,69,69,.45);background:rgba(214,69,69,.10)}
   .spk6{color:#0e7490;border-color:rgba(14,116,144,.45);background:rgba(14,116,144,.10)}
+  .spk.known{font-weight:600;box-shadow:inset 0 0 0 1px rgba(15,157,106,.25)}
   .fix{flex:0 0 auto;font-size:11px;color:var(--fix-fg);background:var(--warn);border-radius:6px;
        padding:1px 6px;margin-top:4px;cursor:help}
   .sep{display:flex;align-items:center;gap:10px;color:var(--dim2);font-size:11.5px;margin:14px 0 6px}
@@ -187,6 +188,11 @@
         <button class="sm" id="lexClear">清空词库</button>
         <span class="lexempty" id="lexStat"></span>
       </div>
+      <div class="lexbar" style="margin-top:14px">
+        <b style="font-size:13px">声纹库（提前认人）</b>
+        <span class="lexempty">注册过的人，以后录音会自动标出名字（跨录音有效，只存在本机）</span>
+      </div>
+      <div class="lexlist" id="vpList"></div>
     </details>
   </section>
 
@@ -215,6 +221,7 @@ const LS_LEXICON = 'doubao-asr-lexicon';        // { corrections: [...], hotword
 const LS_TRANSCRIPT = 'doubao-asr-transcript';  // { version:1, entries: [...] }
 const LS_DIARIZE = 'doubao-asr-diarize';        // '1' / '0'
 const LS_SPEAKERS = 'doubao-asr-speaker-names'; // { "1": "张三", ... }
+const LS_VOICEPRINTS = 'doubao-asr-voiceprints'; // [{ name, vector:[512 个数] }]
 const MAX_ENTRIES = 3000;                       // 太多就丢最早的（防 localStorage 撑爆）
 
 const store = {
@@ -243,11 +250,43 @@ const store = {
   },
 };
 
+let voiceprints = [];
+try { voiceprints = JSON.parse(localStorage.getItem(LS_VOICEPRINTS)) || []; } catch (_) { voiceprints = []; }
+let sessionVectors = {};          // 本次录音每个说话人的声纹（收尾时由服务端给出）
+
+function saveVoiceprints() {
+  try { localStorage.setItem(LS_VOICEPRINTS, JSON.stringify(voiceprints)); }
+  catch (_) { toast('声纹库太大，浏览器存不下了'); }
+  renderVoiceprints();
+}
+
+function renderVoiceprints() {
+  const box = $('vpList');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!voiceprints.length) {
+    const d = document.createElement('div');
+    d.className = 'lexempty';
+    d.textContent = '还没有注册声纹：录完一次后点「说话人 N」标签，起个名字并勾选"记住这个声音"，以后就能自动认出来。';
+    box.appendChild(d);
+  }
+  voiceprints.forEach((vp, i) => {
+    const row = document.createElement('div');
+    row.className = 'lexrow';
+    const n = document.createElement('span'); n.className = 'r'; n.textContent = vp.name;
+    const dim = document.createElement('span'); dim.className = 'cnt'; dim.textContent = `${(vp.vector || []).length} 维声纹`;
+    const x = document.createElement('button'); x.className = 'x'; x.textContent = '✕'; x.title = '删除这个声纹';
+    x.onclick = () => { voiceprints.splice(i, 1); saveVoiceprints(); };
+    row.append(n, dim, x);
+    box.appendChild(row);
+  });
+}
+
 let speakerNames = {};
 try { speakerNames = JSON.parse(localStorage.getItem(LS_SPEAKERS)) || {}; } catch (_) { speakerNames = {}; }
 
-function speakerLabel(spk) {
-  return speakerNames[spk] || `说话人 ${spk}`;
+function speakerLabel(spk, who) {
+  return who || speakerNames[spk] || `说话人 ${spk}`;
 }
 
 let lex = store.lexicon();
@@ -331,14 +370,24 @@ function render() {
     const nodes = [t, off];
     if (l.spk) {
       const spk = document.createElement('span');
-      spk.className = `spk spk${((l.spk - 1) % 6) + 1}`;
-      spk.textContent = speakerLabel(l.spk);
+      spk.className = `spk spk${((l.spk - 1) % 6) + 1}` + (l.who ? ' known' : '');
+      spk.textContent = (l.who ? '✓ ' : '') + speakerLabel(l.spk, l.who);
       spk.title = '点一下给这个说话人起个名字';
       spk.onclick = () => {
-        const name = prompt('给「说话人 ' + l.spk + '」起个名字（留空恢复默认）', speakerNames[l.spk] || '');
+        const current = l.who || speakerNames[l.spk] || '';
+        const name = prompt('给「说话人 ' + l.spk + '」起个名字（留空恢复默认）', current);
         if (name === null) return;
-        if (name.trim()) speakerNames[l.spk] = name.trim(); else delete speakerNames[l.spk];
+        const clean = name.trim();
+        if (clean) speakerNames[l.spk] = clean; else delete speakerNames[l.spk];
         try { localStorage.setItem(LS_SPEAKERS, JSON.stringify(speakerNames)); } catch (_) {}
+        // 有这段录音的声纹数据时，问一句要不要"记住这个声音"
+        const vector = sessionVectors[String(l.spk)];
+        if (clean && vector && confirm(`要把「${clean}」的声音存进本机声纹库吗？\n\n存了以后，这个人的声音在以后的录音里会自动被认出来（只存在你这台浏览器）。`)) {
+          voiceprints = voiceprints.filter((v) => v.name !== clean);
+          voiceprints.unshift({ name: clean, vector });
+          saveVoiceprints();
+          toast(`已记住「${clean}」的声音`);
+        }
         render();
       };
       nodes.push(spk);
@@ -504,6 +553,7 @@ function handleMessage(msg) {
     persist();
     live = [];
     render();
+    if (msg.speaker_vectors) sessionVectors = msg.speaker_vectors;
     if (lastSessionMarker && msg.audio_seconds) {
       lastSessionMarker.audio = msg.audio_seconds;
       lastSessionMarker.speech = msg.recognized_seconds;
@@ -524,7 +574,7 @@ function flushQueue() {
 }
 
 async function start() {
-  live = []; firstResultAt = 0; pcmQueue = [];
+  live = []; firstResultAt = 0; pcmQueue = []; sessionVectors = {};
   pendingSessionTs = Date.now();     // 先记着，等识别出内容再落分隔线（空录音不留痕）
   render();
   setStatus('请求麦克风…', 'busy');
@@ -545,7 +595,8 @@ async function start() {
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
     // 会话开始先把本机词库发给服务端（只在这次会话里用，服务端不保存）
-    ws.send(JSON.stringify({ type: 'config', lexicon: lex, diarize: $('diarChk').checked }));
+    ws.send(JSON.stringify({ type: 'config', lexicon: lex, diarize: $('diarChk').checked,
+                             voiceprints: $('diarChk').checked ? voiceprints : [] }));
     flushQueue();                                 // 把连上之前攒下的音频补发出去
     setStatus('已连接，请说话', 'on');
   };
@@ -605,7 +656,7 @@ toggle.onclick = async () => {
 
 function plainText() { return allLines().map((l) => l.text).join('\n'); }
 function withSpeaker(l) {
-  return l.spk ? `${speakerLabel(l.spk)}: ${l.text}` : l.text;
+  return l.spk ? `${speakerLabel(l.spk, l.who)}: ${l.text}` : l.text;
 }
 function timestampedText() {
   const lines = allLines();
@@ -696,6 +747,7 @@ fetch('/health').then((r) => r.json()).then((j) => {
 
 render();
 renderLexicon();
+renderVoiceprints();
 fetch('/health').then((r) => r.json()).then((j) => {
   $('tagModel').textContent = j.app_key_ready ? 'doubao-ime · 就绪' : 'doubao-ime · 待初始化';
 }).catch(() => {});

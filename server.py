@@ -1012,10 +1012,14 @@ async def transcribe_socket(ws: WebSocket):
                 return
             for line in lines:
                 if line.get("final") and not line.get("spk"):
-                    spk = await asyncio.to_thread(tracker.assign, bytes(history), line.get("start"), line.get("end"))
-                    if spk:
+                    hit = await asyncio.to_thread(tracker.assign, bytes(history), line.get("start"), line.get("end"))
+                    if hit:
+                        spk, name = hit
                         line["spk"] = spk
-                        log.info("在线说话人：%.1f-%.1fs → 说话人 %s", line.get("start") or 0, line.get("end") or 0, spk)
+                        if name:
+                            line["who"] = name
+                        log.info("在线说话人：%.1f-%.1fs → %s", line.get("start") or 0, line.get("end") or 0,
+                                 f"「{name}」" if name else f"说话人 {spk}")
 
         async def emit(lines):
             await label_speakers(lines)
@@ -1029,12 +1033,14 @@ async def transcribe_socket(ws: WebSocket):
         # 服务端只在本次会话里用，用完即弃 —— 这样多人同时用不会互相覆盖。
         session_lexicon = Lexicon()
         early_audio = []
+        gallery = []                      # 浏览器本地保存的声纹库，进来后填
         tracker = SpeakerTracker() if DIAR_MODE in ("online", "both") and DIARIZER.available() else None
 
         nonlocal_diarize = [False]          # read_config 里改，主流程里读
 
         async def read_config():
-            """等客户端先发词库（最多 1s）；如果先收到音频就留着，交给后面正常流程。"""
+            """等客户端先发「词库 + 声纹库 + 开关」（最多 1s）；先收到音频就留着，交给后面正常流程。"""
+            nonlocal gallery
             deadline = time.time() + 1.0
             while True:
                 try:
@@ -1050,6 +1056,10 @@ async def transcribe_socket(ws: WebSocket):
                         continue
                     if command.get("type") == "config":
                         nonlocal_diarize[0] = bool(command.get("diarize"))
+                        gallery = command.get("voiceprints") or []
+                        if tracker is not None and gallery:
+                            added = sum(1 for item in gallery if tracker.add_voiceprint(item.get("name"), item.get("vector")))
+                            log.info("加载本机声纹库：%d 条（有效 %d 条）", len(gallery), added)
                         session_lexicon.data = Lexicon.from_payload(command.get("lexicon") or {}).data
                         log.info("会话词库：%d 条纠正 / %d 个热词", len(session_lexicon.data["corrections"]),
                                  len(session_lexicon.data["hotwords"]))
@@ -1159,7 +1169,9 @@ async def transcribe_socket(ws: WebSocket):
                                             # 诊断用：浏览器送来多少秒音频 / 上游认到第几秒。
                                             # 两者差得多说明「音频到了但没认出来」，不是链路丢包。
                                             "audio_seconds": round(received, 1),
-                                            "recognized_seconds": round(last_end, 1)})
+                                            "recognized_seconds": round(last_end, 1),
+                                            # 本次每个说话人的中心向量：前端"给这个人注册声纹"时要用
+                                            "speaker_vectors": tracker.vectors() if tracker else {}})
                         break
                     if command.get("type") == "cancel":
                         break
