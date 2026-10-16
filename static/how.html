@@ -1407,7 +1407,6 @@ func main() {
     <tr><td><code>GET /</code></td><td>录音页面（前端可直接抄 <code>/static/index.html</code> + <code>/static/worklet.js</code>）</td></tr>
     <tr><td><code>WS /ws?engine=auto|cloud|local</code></td><td>转写会话；<code>auto</code> = 云端优先，失败自动降级本地引擎</td></tr>
     <tr><td><code>GET /health</code></td><td>状态、设备凭据是否就绪、并发上限、纠正/热词数量</td></tr>
-    <tr><td><code>GET /api/lexicon</code></td><td>纠正词典 + 热词</td></tr>
     <tr><td><code>POST /api/corrections</code></td><td><code>{"wrong":"识别错的","right":"用户改成的"}</code>：记住并影响后续识别</td></tr>
     <tr><td><code>POST|DELETE /api/hotwords</code></td><td>手加热词 / 删除</td></tr>
   </table>

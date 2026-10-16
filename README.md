@@ -150,7 +150,7 @@ AudioWorklet 采集 16k/mono/PCM16
 | `DOUBAO_CONTEXT` | `1` | 是否把热词上下文带给上游 |
 | `DOUBAO_CLOUD_WS` | 官方地址 | 上游 WebSocket 地址（换代理/自建网关时用） |
 | `DOUBAO_GITHUB_URL` | 本项目地址 | 页面上 GitHub 图标指向的仓库 |
-| `DOUBAO_CREDS` / `DOUBAO_LEXICON` | `.creds.json` / `lexicon.json` | 凭据 / 旧词库文件位置 |
+| `DOUBAO_CREDS` | `.creds.json` | 设备凭据缓存位置 |
 | `DOUBAO_LOCAL_ENGINE` + `DOUBAO_LOCAL_ENGINE_TOKEN` | 空 | 本地兜底引擎（FunASR `asr-engine`）；配了才会启用降级 |
 | `DOUBAO_LOG_LEVEL` / `DOUBAO_DEBUG_WIRE` | `INFO` / `0` | 日志级别 / dump 上游字节（排查用） |
 
@@ -164,7 +164,6 @@ AudioWorklet 采集 16k/mono/PCM16
 | `GET /how` | 原理与复刻指南（公式：下载地址、包结构、协议表、三语言示例、集成方式、离线方案） |
 | `WS /ws?engine=auto\|cloud\|local` | 转写会话；`auto` = 云端优先，失败自动降级本地引擎 |
 | `GET /health` | 状态、并发、上游凭据是否就绪 |
-| `GET /api/lexicon` | 旧的共享词库（只读，仅供"首次导入"） |
 
 ### WebSocket 协议
 

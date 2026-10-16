@@ -43,7 +43,6 @@ logging.basicConfig(level=os.environ.get("DOUBAO_LOG_LEVEL", "INFO").upper(),
 BASE = Path(__file__).resolve().parent
 STATIC = BASE / "static"
 CREDS_PATH = Path(os.environ.get("DOUBAO_CREDS", BASE / ".creds.json"))
-LEXICON_PATH = Path(os.environ.get("DOUBAO_LEXICON", BASE / "lexicon.json"))
 
 AID = int(os.environ.get("DOUBAO_AID", "685343"))          # 取自 ImeService.exe
 APP_NAME = "oime"
@@ -190,17 +189,13 @@ class Lexicon:
     1. 每句识别结果先过一遍本地替换（对应豆包输入法的 asr_user_correct_dict.dat）
     2. 把改后词当热词通过会话 context 发给上游（对应 AsrContextBuilder 的 hotwords）
 
-    词库现在由**浏览器本地**保存（每人一份、互不覆盖），服务端只在每次会话开始时
-    从客户端收到一份，用完即弃（`Lexicon()` 不落盘）。`Lexicon(path)` 那份是服务端
-    的历史遗留数据，只用于「首次导入」，不再被会话读取。
+    词库由**浏览器本地**保存（每人一份、互不覆盖）：服务端在每个会话开始时从客户端收一份，
+    用完即弃，服务端不保存任何词库。
     """
 
-    def __init__(self, path=None):
-        self.path = path
+    def __init__(self):
         self.data = {"corrections": [], "hotwords": []}
         self.lock = asyncio.Lock()
-        if path is not None:
-            self._load()
 
     @classmethod
     def from_payload(cls, payload):
@@ -217,68 +212,6 @@ class Lexicon:
                 })
         lex.data["hotwords"] = [str(w).strip() for w in (payload.get("hotwords") or []) if str(w).strip()]
         return lex
-
-    def _load(self):
-        try:
-            raw = json.loads(Path(self.path).read_text(encoding="utf-8"))
-            self.data["corrections"] = [c for c in raw.get("corrections", []) if c.get("wrong") and c.get("right")]
-            self.data["hotwords"] = [w for w in raw.get("hotwords", []) if w]
-            for c in self.data["corrections"]:        # 老数据补上 phrase 字段
-                c.setdefault("phrase", self.corrected_phrase(c["wrong"], c["right"]))
-        except Exception:
-            pass
-
-    def _save(self):
-        if self.path is None:            # 会话级词库不落盘
-            return
-        try:
-            Path(self.path).write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            log.warning("词典写入失败", exc_info=True)
-
-    async def add_correction(self, wrong, right):
-        wrong, right = (wrong or "").strip(), (right or "").strip()
-        if not wrong or not right or wrong == right:
-            return None
-        async with self.lock:
-            for item in self.data["corrections"]:
-                if item["wrong"] == wrong:
-                    item.update(right=right, count=item.get("count", 1) + 1,
-                                updated_at=time.time())
-                    self._save()
-                    return item
-            item = {"wrong": wrong, "right": right, "count": 1,
-                    "phrase": self.corrected_phrase(wrong, right),
-                    "updated_at": time.time(), "created_at": time.time()}
-            self.data["corrections"].insert(0, item)
-            self._save()
-            log.info("学到纠正：%s → %s", wrong, right)
-            return item
-
-    async def drop_correction(self, wrong):
-        async with self.lock:
-            before = len(self.data["corrections"])
-            self.data["corrections"] = [c for c in self.data["corrections"] if c["wrong"] != wrong]
-            self._save()
-            return before != len(self.data["corrections"])
-
-    async def add_hotword(self, word):
-        word = (word or "").strip()
-        if not word:
-            return False
-        async with self.lock:
-            if word in self.data["hotwords"]:
-                return False
-            self.data["hotwords"].insert(0, word)
-            self._save()
-            return True
-
-    async def drop_hotword(self, word):
-        async with self.lock:
-            before = len(self.data["hotwords"])
-            self.data["hotwords"] = [w for w in self.data["hotwords"] if w != word]
-            self._save()
-            return before != len(self.data["hotwords"])
 
     @staticmethod
     def corrected_phrase(wrong, right):
@@ -323,7 +256,6 @@ class Lexicon:
         return text, hits
 
 
-SEED_LEXICON = Lexicon(LEXICON_PATH)   # 仅用于「首次导入」，会话不再读它
 
 
 def build_context(app_name, hotwords):
@@ -1214,8 +1146,6 @@ async def health():
         "app_key_ready": bool(creds.get("app_key")),
         "max_sessions": MAX_SESSIONS,
         "aid": AID,
-        "corrections": len(SEED_LEXICON.data["corrections"]),
-        "hotwords": SEED_LEXICON.hotwords(),
     }
 
 
@@ -1228,21 +1158,6 @@ class Correction(BaseModel):
 
 class Hotword(BaseModel):
     word: str
-
-
-@app.get("/api/lexicon")
-async def get_lexicon():
-    """服务端的历史遗留词库（只读）。
-
-    词库现在存在**浏览器本地**（localStorage），每人一份互不覆盖；
-    这个接口只用于「首次导入」——老用户把以前学过的词条一次性搬到自己的浏览器里。
-    """
-    return {
-        "corrections": SEED_LEXICON.data["corrections"],
-        "hotwords": SEED_LEXICON.data["hotwords"],
-        "effective_hotwords": SEED_LEXICON.hotwords(),
-        "note": "词库已改为浏览器本地保存，此接口仅供首次导入",
-    }
 
 
 @app.post("/api/corrections")

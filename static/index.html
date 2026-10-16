@@ -169,7 +169,6 @@
         <button class="sm" id="hotAdd">添加</button>
       </div>
       <div class="lexbar">
-        <button class="sm" id="lexImport" style="display:none"></button>
         <button class="sm" id="lexClear">清空词库</button>
         <span class="lexempty" id="lexStat"></span>
       </div>
@@ -367,28 +366,6 @@ function renderLexicon() {
   chips.appendChild(eff);
 
   $('lexStat').textContent = `本机词库：${lex.corrections.length} 条纠正 / ${lex.hotwords.length} 个热词`;
-  checkImport();
-}
-
-// 老用户的一次性迁移：服务端还留着一份旧词库，用户点了才搬过来
-let serverLexicon = null;
-async function checkImport() {
-  const btn = $('lexImport');
-  if (lex.corrections.length || lex.hotwords.length) { btn.style.display = 'none'; return; }
-  if (serverLexicon === null) {
-    try { serverLexicon = await fetch('/api/lexicon').then((r) => r.json()); }
-    catch (_) { serverLexicon = { corrections: [], hotwords: [] }; }
-  }
-  const n = (serverLexicon.corrections || []).length + (serverLexicon.hotwords || []).length;
-  if (!n) { btn.style.display = 'none'; return; }
-  btn.style.display = '';
-  btn.textContent = `从服务器导入旧词库（${n} 条）`;
-  btn.onclick = () => {
-    lex.corrections = lex.corrections.concat(serverLexicon.corrections || []);
-    lex.hotwords = lex.hotwords.concat(serverLexicon.hotwords || []);
-    saveLex();
-    toast('已导入到本机浏览器');
-  };
 }
 
 function learnCorrection(wrong, right) {
