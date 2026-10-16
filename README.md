@@ -352,6 +352,7 @@ WantedBy=multi-user.target
 ./venv/bin/python tests/verify_diarization.py        # 两段不同人的音频 → 标签不同
 ./venv/bin/python tests/verify_voiceprint.py         # 注册声纹 → 下次自动认出这个人
 ./venv/bin/python tests/verify_offline_engine.py     # 离线引擎 + 自动/在线/离线三档（10 项检查）
+./venv/bin/python tests/compare_engines.py           # 同音频跑「在线 vs 离线」，出 CER 与耗时对比
 
 # 改完示例代码后重新生成原理页
 ./venv/bin/python tools/build_how_page.py
