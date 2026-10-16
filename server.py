@@ -31,6 +31,7 @@ import urllib.request
 
 import httpx
 import websockets
+from diarization import DIARIZER, assign_speakers
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -1014,6 +1015,9 @@ async def transcribe_socket(ws: WebSocket):
         # 服务端只在本次会话里用，用完即弃 —— 这样多人同时用不会互相覆盖。
         session_lexicon = Lexicon()
         early_audio = []
+        want_diarize = False
+
+        nonlocal_diarize = [False]          # read_config 里改，主流程里读
 
         async def read_config():
             """等客户端先发词库（最多 1s）；如果先收到音频就留着，交给后面正常流程。"""
@@ -1031,6 +1035,7 @@ async def transcribe_socket(ws: WebSocket):
                     except ValueError:
                         continue
                     if command.get("type") == "config":
+                        nonlocal_diarize[0] = bool(command.get("diarize"))
                         session_lexicon.data = Lexicon.from_payload(command.get("lexicon") or {}).data
                         log.info("会话词库：%d 条纠正 / %d 个热词", len(session_lexicon.data["corrections"]),
                                  len(session_lexicon.data["hotwords"]))
@@ -1112,9 +1117,20 @@ async def transcribe_socket(ws: WebSocket):
                             await session.push(pending, 1 if not sent_first else 9)
                             pending = None
                         lines, error = await session.finish()
+                        speakers = 0
+                        if nonlocal_diarize[0]:
+                            if DIARIZER.available():
+                                await ws.send_json({"type": "status", "message": "正在区分说话人（本地模型）…"})
+                                segments = await asyncio.to_thread(DIARIZER.diarize, bytes(history))
+                                speakers = assign_speakers(lines, segments)
+                                log.info("说话人分离：%d 段 → %d 人", len(segments), speakers)
+                                if not speakers:
+                                    error = error or "没听出多个人（或音频太短），本次未区分说话人"
+                            else:
+                                error = error or "未安装说话人分离模型，跳过（见 tools/fetch_diarization_models.sh）"
                         await ws.send_json({"type": "final", "engine": engine, "lines": public(lines),
                                             "text": "\n".join(l["text"] for l in lines if l.get("text")),
-                                            "error": error})
+                                            "speakers": speakers, "error": error})
                         break
                     if command.get("type") == "cancel":
                         break
@@ -1146,6 +1162,7 @@ async def health():
         "app_key_ready": bool(creds.get("app_key")),
         "max_sessions": MAX_SESSIONS,
         "aid": AID,
+        "diarization": DIARIZER.status(),
     }
 
 

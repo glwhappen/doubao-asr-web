@@ -16,3 +16,6 @@ examples/package-lock.json
 
 # 本机测试产物
 tests/.cache/
+
+# 说话人分离模型（体积大，不入库）
+models/

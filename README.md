@@ -10,6 +10,7 @@
 - ✏️ **会学你的纠正**：点句子直接改，改法记住并影响后续识别
 - 🔒 **数据不出本机浏览器**：转写与词库都存 `localStorage`，多人共用一份部署也互不覆盖
 - 🧩 **可集成**：服务端是标准 WebSocket，附 Python / Node / Go 三份最小客户端
+- 🗣️ **说话人分离**（可选）：多人对话时给每句标「谁说的」，可给说话人改名；本地模型，离线可用
 - 🌗 **亮/暗主题**、🛟 **离线兜底**（云端不可用时自动切本地 FunASR）
 
 > ⚠️ **先看免责声明**：本项目调用的是豆包输入法客户端内部的**未公开接口**，仅供技术研究与个人自用。
@@ -153,6 +154,10 @@ AudioWorklet 采集 16k/mono/PCM16
 | `DOUBAO_CREDS` | `.creds.json` | 设备凭据缓存位置 |
 | `DOUBAO_LOCAL_ENGINE` + `DOUBAO_LOCAL_ENGINE_TOKEN` | 空 | 本地兜底引擎（FunASR `asr-engine`）；配了才会启用降级 |
 | `DOUBAO_LOG_LEVEL` / `DOUBAO_DEBUG_WIRE` | `INFO` / `0` | 日志级别 / dump 上游字节（排查用） |
+| `DOUBAO_DIAR_DIR` | `./models` | 说话人分离模型目录 |
+| `DOUBAO_DIAR_THRESHOLD` | `0.7` | 聚类阈值（越小越容易并成一个人） |
+| `DOUBAO_DIAR_MIN_ON` / `MIN_OFF` | `0.3` / `0.5` | 分割片段的最短/最短间隔 |
+| `DOUBAO_DIAR_MAX_SECONDS` | `600` | 超过这个时长就跳过分离，防卡死 |
 
 ---
 
@@ -170,19 +175,20 @@ AudioWorklet 采集 16k/mono/PCM16
 ```jsonc
 // 客户端 → 服务端
 二进制帧             16k 单声道 PCM16（怎么切都行，服务端会攒成 20ms 帧）
-{"type":"config","lexicon":{"corrections":[{"wrong":"接口测试","right":"接口验证"}],"hotwords":["专有名词"]}}
+{"type":"config","lexicon":{"corrections":[{"wrong":"接口测试","right":"接口验证"}],"hotwords":["专有名词"]},
+ "diarize":true}     // diarize=true 时收尾会做说话人分离
 {"type":"stop"}      说完了，收尾并返回最终结果
 {"type":"cancel"}    丢弃本次会话
 
 // 服务端 → 客户端
 {"type":"status","engine":"cloud|local","message":"…"}
 {"type":"update","engine":"cloud","lines":[…],"text":"…"}   // 实时结果，每次给全量
-{"type":"final","engine":"cloud","lines":[…],"text":"…","error":null}
+{"type":"final","engine":"cloud","lines":[…],"text":"…","speakers":2,"error":null}   // lines 里可能有 spk
 {"type":"error","message":"…"}
 
 // lines 的每一项
-{"text":"你好。","start":0.0,"end":1.3,"ts":1792130303000,"final":true,
- "orig":"你号。","fixes":[["你号。","你好。"]]}   // orig/fixes 只在命中本地纠正时出现
+{"text":"你好。","start":0.0,"end":1.3,"ts":1792130303000,"final":true,"spk":2,
+ "orig":"你号。","fixes":[["你号。","你好。"]]}   // orig/fixes/spk 都是可选的
 ```
 
 ---
@@ -240,6 +246,41 @@ WantedBy=multi-user.target
 
 ---
 
+## 说话人分离（可选）
+
+上游 ASR **不支持**说话人分离（结果里没有 speaker 字段），所以这一步在我们这边做：
+会话结束后对整段录音跑一次本地分离模型，再把结果按「时间重叠最多」贴到每一句上。
+
+方案和 [screenpipe](https://github.com/screenpipe/screenpipe) 一致 ——
+**pyannote 分割模型 + 3D-Speaker 声纹 + 聚类**（sherpa-onnx 的 `OfflineSpeakerDiarization`，同一套配方）：
+
+```bash
+# 1) 装依赖（只有做分离才需要，基础功能不依赖它）
+./venv/bin/pip install -r requirements-diarization.txt
+
+# 2) 下模型（约 45MB，走 hf-mirror 镜像；GitHub releases 在国内常被墙）
+./tools/fetch_diarization_models.sh          # → ./models/{segmentation,embedding}.onnx
+```
+
+页面上勾选「**区分说话人**」即可（偏好存在本机）。结束录音后会多花几秒做分离，
+每句前面出现「说话人 1 / 说话人 2」彩色标签，**点标签可以改名**（比如改成「李总」），
+改名后导出的 TXT/SRT/JSON 里也用这个名字。
+
+实测数据（32 核 CPU，单进程）：
+
+| 项 | 值 |
+|---|---|
+| 速度 | 19.3s 音频约 8s（≈2.4× 实时），只在收尾时跑一次 |
+| 模型 | pyannote segmentation-3.0（6 MB）+ 3D-Speaker ERes2Net（38 MB） |
+| 效果 | 中文女声 + 英文男声混在一起 → 正确分成 2 人；单人录音 → 只有 1 人 |
+| 阈值 | `DOUBAO_DIAR_THRESHOLD` 默认 **0.7**（0.5 会把同一人的尾巴拆成「第三个人」，0.9 会把两个人合并） |
+
+**局限（先说清楚）**：不做重叠语音（两人同时说话归给其中一人）；聚类是整段批处理，
+所以只能**录音结束后**出标签，做不到边说边分；说话人编号只在这一次录音内有意义，
+跨录音不会自动认出「还是刚才那个人」（要做声纹库得自己存 embedding）。
+
+关掉它：页面取消勾选，或服务端不装模型（`/health` 会报 `diarization.available=false`，页面上该选项自动禁用）。
+
 ## 离线方案
 
 豆包自己的端侧离线识别**拿不过来**（模型是私有逐张量格式、推理引擎 Flute 静态编译进客户端、模型包要鉴权下载；
@@ -258,11 +299,12 @@ WantedBy=multi-user.target
 ## 开发
 
 ```bash
-# 单元测试（不联网：分段、合并、词库替换）
+# 单元测试（不联网：分段、合并、词库替换、说话人贴标签）
 ./venv/bin/python -m unittest discover -s tests -p "test_*.py" -v
 
-# 会话级词库的端到端验证（需要服务在跑）
-./venv/bin/python tests/verify_session_lexicon.py
+# 端到端验证（需要服务在跑）
+./venv/bin/python tests/verify_session_lexicon.py    # 词库只对本次会话生效
+./venv/bin/python tests/verify_diarization.py        # 两段不同人的音频 → 标签不同
 
 # 改完示例代码后重新生成原理页
 ./venv/bin/python tools/build_how_page.py
@@ -272,6 +314,8 @@ WantedBy=multi-user.target
 
 ```
 server.py                  FastAPI：凭据、上游 protobuf 会话、本地兜底、/ws
+diarization.py             说话人分离（sherpa-onnx：pyannote 分割 + 3D-Speaker 声纹 + 聚类）
+tools/fetch_diarization_models.sh  下载分离模型
 static/index.html          录音页面（前端逻辑全在这里）
 static/worklet.js          AudioWorklet：任意采样率 → 16k PCM16
 static/theme.js            亮/暗主题切换

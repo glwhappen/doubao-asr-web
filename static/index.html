@@ -90,6 +90,18 @@
              padding:0 4px;opacity:0;transition:.15s}
   .row:hover .kill{opacity:1}
   .row .kill:hover{color:var(--err)}
+  .opt{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--dim);cursor:pointer;
+       user-select:none;margin-top:10px}
+  .opt input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+  .spk{flex:0 0 auto;font-size:11px;border:1px solid transparent;border-radius:6px;padding:1px 7px;margin-top:4px;
+       cursor:pointer;white-space:nowrap}
+  .spk:hover{opacity:.75}
+  .spk1{color:#2f6bff;border-color:rgba(47,107,255,.45);background:rgba(47,107,255,.10)}
+  .spk2{color:#0f9d6a;border-color:rgba(15,157,106,.45);background:rgba(15,157,106,.10)}
+  .spk3{color:#c07a12;border-color:rgba(192,122,18,.45);background:rgba(192,122,18,.10)}
+  .spk4{color:#a855f7;border-color:rgba(168,85,247,.45);background:rgba(168,85,247,.10)}
+  .spk5{color:#d64545;border-color:rgba(214,69,69,.45);background:rgba(214,69,69,.10)}
+  .spk6{color:#0e7490;border-color:rgba(14,116,144,.45);background:rgba(14,116,144,.10)}
   .fix{flex:0 0 auto;font-size:11px;color:var(--fix-fg);background:var(--warn);border-radius:6px;
        padding:1px 6px;margin-top:4px;cursor:help}
   .sep{display:flex;align-items:center;gap:10px;color:var(--dim2);font-size:11.5px;margin:14px 0 6px}
@@ -139,6 +151,9 @@
       首次使用需授权麦克风；<b>录音不落盘</b>，识别在服务端完成后只把文字存进本机浏览器。<br>
       已定稿的句子可以<b>点文字直接改</b>（会记住你的改法），行尾 ✕ 可删除单句；只有点「清空」才会删掉历史。
     </div>
+    <label class="opt" id="diarWrap" title="用本地模型（pyannote 分割 + 3D-Speaker 声纹）区分是谁在说话，结束后多花几秒">
+      <input type="checkbox" id="diarChk"> 区分说话人（多人对话时给每句标「谁说的」，点标签可改名）
+    </label>
   </section>
 
   <section class="card">
@@ -198,6 +213,8 @@ const meter = $('meter').firstElementChild, tagLatency = $('tagLatency'), tagSta
 
 const LS_LEXICON = 'doubao-asr-lexicon';        // { corrections: [...], hotwords: [...] }
 const LS_TRANSCRIPT = 'doubao-asr-transcript';  // { version:1, entries: [...] }
+const LS_DIARIZE = 'doubao-asr-diarize';        // '1' / '0'
+const LS_SPEAKERS = 'doubao-asr-speaker-names'; // { "1": "张三", ... }
 const MAX_ENTRIES = 3000;                       // 太多就丢最早的（防 localStorage 撑爆）
 
 const store = {
@@ -225,6 +242,13 @@ const store = {
     return list;
   },
 };
+
+let speakerNames = {};
+try { speakerNames = JSON.parse(localStorage.getItem(LS_SPEAKERS)) || {}; } catch (_) { speakerNames = {}; }
+
+function speakerLabel(spk) {
+  return speakerNames[spk] || `说话人 ${spk}`;
+}
 
 let lex = store.lexicon();
 let entries = store.entries();     // 已定稿的行 + 段落分隔（持久）
@@ -284,7 +308,22 @@ function render() {
     txt.className = 'txt' + (isLive ? '' : ' editable');
     txt.textContent = l.text;
     if (!isLive) txt.title = '点击修改这句（会记住你的改法，只影响你自己）';
-    const nodes = [t, off, txt];
+    const nodes = [t, off];
+    if (l.spk) {
+      const spk = document.createElement('span');
+      spk.className = `spk spk${((l.spk - 1) % 6) + 1}`;
+      spk.textContent = speakerLabel(l.spk);
+      spk.title = '点一下给这个说话人起个名字';
+      spk.onclick = () => {
+        const name = prompt('给「说话人 ' + l.spk + '」起个名字（留空恢复默认）', speakerNames[l.spk] || '');
+        if (name === null) return;
+        if (name.trim()) speakerNames[l.spk] = name.trim(); else delete speakerNames[l.spk];
+        try { localStorage.setItem(LS_SPEAKERS, JSON.stringify(speakerNames)); } catch (_) {}
+        render();
+      };
+      nodes.push(spk);
+    }
+    nodes.push(txt);
     if (l.fixes && l.fixes.length) {
       const fix = document.createElement('span');
       fix.className = 'fix'; fix.textContent = '已纠正';
@@ -461,7 +500,7 @@ async function start() {
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
     // 会话开始先把本机词库发给服务端（只在这次会话里用，服务端不保存）
-    ws.send(JSON.stringify({ type: 'config', lexicon: lex }));
+    ws.send(JSON.stringify({ type: 'config', lexicon: lex, diarize: $('diarChk').checked }));
     setStatus('已连接，请说话', 'on');
   };
   ws.onmessage = (ev) => { try { handleMessage(JSON.parse(ev.data)); } catch (_) {} };
@@ -476,6 +515,7 @@ async function start() {
     if (ws && ws.readyState === 1) ws.send(ev.data.pcm);
   };
 
+  try { localStorage.setItem(LS_DIARIZE, $('diarChk').checked ? '1' : '0'); } catch (_) {}
   recording = true; startedAt = performance.now();
   toggle.textContent = '停止并识别'; toggle.classList.add('rec');
   tagLatency.textContent = '--';
@@ -513,6 +553,9 @@ toggle.onclick = async () => {
 // ---------------------------------------------------------------- 导出
 
 function plainText() { return allLines().map((l) => l.text).join('\n'); }
+function withSpeaker(l) {
+  return l.spk ? `${speakerLabel(l.spk)}: ${l.text}` : l.text;
+}
 function timestampedText() {
   const lines = allLines();
   if (!lines.length) return '';
@@ -520,7 +563,7 @@ function timestampedText() {
   return lines.map((l) => {
     const rel = ((l.ts - base) / 1000).toFixed(1);
     const dur = ((l.end === null || l.end === undefined ? l.start : l.end) - (l.start || 0));
-    return `[${clockTime(l.ts)}  +${rel}s  ${(dur || 0).toFixed(1)}s] ${l.text}`;
+    return `[${clockTime(l.ts)}  +${rel}s  ${(dur || 0).toFixed(1)}s] ${withSpeaker(l)}`;
   }).join('\n');
 }
 function srtText() {
@@ -536,7 +579,7 @@ function srtText() {
   return lines.map((l, i) => {
     const start = (l.ts - base) / 1000;
     const dur = Math.max(0.6, ((l.end === null || l.end === undefined ? l.start : l.end) - (l.start || 0)) || 0.6);
-    return `${i + 1}\n${fmt(start)} --> ${fmt(start + dur)}\n${l.text}\n`;
+    return `${i + 1}\n${fmt(start)} --> ${fmt(start + dur)}\n${withSpeaker(l)}\n`;
   }).join('\n');
 }
 function download(name, text, mime) {
@@ -585,6 +628,19 @@ $('lexClear').onclick = () => {
   saveLex();
   toast('词库已清空');
 };
+
+$('diarChk').checked = (localStorage.getItem(LS_DIARIZE) || '0') === '1';
+$('diarChk').onchange = () => {
+  try { localStorage.setItem(LS_DIARIZE, $('diarChk').checked ? '1' : '0'); } catch (_) {}
+};
+fetch('/health').then((r) => r.json()).then((j) => {
+  const d = j.diarization || {};
+  if (!d.available) {
+    $('diarChk').disabled = true;
+    $('diarWrap').title = '服务端未安装说话人分离模型（见 tools/fetch_diarization_models.sh）';
+    $('diarWrap').style.opacity = '.5';
+  }
+}).catch(() => {});
 
 render();
 renderLexicon();
