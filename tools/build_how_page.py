@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """把原理页模板 + examples 下的示例代码合成为静态页面。
 
-用途: 生成 /root/doubao-asr-web/static/how.html（原理与复刻指南）
+用途: 生成 static/how.html（原理与复刻指南，把 templates/ 与 examples/ 合成静态页）
 用法: ./venv/bin/python tools/build_how_page.py
 入参: 无。读 templates/how.html 与 examples/asr_min.{py,js,go}
 出参: static/how.html（含 HTML 转义后的示例代码）

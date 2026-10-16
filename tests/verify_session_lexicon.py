@@ -7,10 +7,12 @@ import asyncio
 import json
 import sys
 import wave
+from pathlib import Path
 
 import websockets
 
-WAV = sys.argv[1] if len(sys.argv) > 1 else "/root/doubao-asr-web/tests/fixture-6s.wav"
+ROOT = Path(__file__).resolve().parent.parent
+WAV = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "tests" / "fixture-6s.wav")
 HOST = sys.argv[2] if len(sys.argv) > 2 else "172.17.0.1"
 PORT = sys.argv[3] if len(sys.argv) > 3 else "4416"
 
