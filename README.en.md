@@ -16,6 +16,10 @@ sentence by sentence. **No login, no API key, no paid API.**
 > use the official [Volcengine ASR](https://www.volcengine.com/product/asr) or a local model
 > (FunASR / sherpa-onnx / whisper.cpp).
 
+> 🔗 **Live demo (nothing to install)**: <https://doubao.hsfp.cn/> — your data still stays in your
+> own browser. It is a self-hosted instance run by the author, so it may be rate-limited or offline
+> at times; for regular use, self-host it via [Quick start](#quick-start).
+
 ![screenshot](docs/screenshot-light.png)
 
 ## Quick start
