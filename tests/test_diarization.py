@@ -3,6 +3,11 @@ import sys
 import unittest
 from pathlib import Path
 
+try:                     # 声纹相关测试需要 numpy（它在 requirements-diarization.txt 里）
+    import numpy as np
+except ImportError:      # 没装就跳过那几条，而不是让整个测试挂掉
+    np = None
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import diarization  # noqa: E402
 
@@ -69,17 +74,15 @@ class AssignSpeakersCase(unittest.TestCase):
         self.assertTrue(merged)
 
 
+@unittest.skipUnless(np is not None, "需要 numpy：pip install numpy")
 class VoiceprintCase(unittest.TestCase):
     """声纹库匹配（不需要模型：直接喂造出来的向量）。"""
 
     def setUp(self):
-        import numpy as np
-        self.np = np
         self.tracker = diarization.SpeakerTracker()
 
     @staticmethod
     def vec(*values):
-        import numpy as np
         v = np.array(values, dtype="float32")
         return v / (float((v ** 2).sum()) ** 0.5)
 

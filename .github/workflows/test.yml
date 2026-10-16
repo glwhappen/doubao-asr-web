@@ -14,6 +14,8 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
+      # numpy 只给声纹相关的单元测试用（运行时依赖在 requirements-diarization.txt）
+      - run: pip install numpy
       - name: 单元测试（不联网：分段/合并/词库）
         run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: 语法检查
