@@ -172,6 +172,7 @@
         <button class="sm" id="srtBtn">导出 SRT</button>
         <button class="sm" id="jsonBtn">导出 JSON</button>
         <button class="sm" id="clearBtn">清空</button>
+        <button class="sm" id="undoBtn" style="display:none">撤销清空</button>
       </div>
     </div>
     <div id="output"><span class="ph">识别结果会按句实时出现在这里……</span></div>
@@ -220,6 +221,7 @@ const meter = $('meter').firstElementChild, tagLatency = $('tagLatency'), tagSta
 
 const LS_LEXICON = 'doubao-asr-lexicon';        // { corrections: [...], hotwords: [...] }
 const LS_TRANSCRIPT = 'doubao-asr-transcript';  // { version:1, entries: [...] }
+const LS_TRANSCRIPT_BACKUP = 'doubao-asr-transcript-backup';  // 清空前自动备份，可撤销
 const LS_DIARIZE = 'doubao-asr-diarize';        // '1' / '0'
 const LS_SPEAKERS = 'doubao-asr-speaker-names'; // { "1": "张三", ... }
 const LS_VOICEPRINTS = 'doubao-asr-voiceprints'; // [{ name, vectors:[[...192 个数]], dim }]
@@ -241,13 +243,52 @@ const store = {
       return Array.isArray(raw.entries) ? raw.entries : [];
     } catch (_) { return []; }
   },
-  saveEntries(entries) {
-    let list = entries;
+  // 合并写入：先读现有内容，按 key 求并集再写回。
+  // 这样即使同时开着多个标签页（每个标签页各有一份内存数组），也不会互相覆盖——
+  // 以前是"把自己内存里的整个数组写回去"，旧标签页会把新数据顶掉。
+  mergeEntries(mine) {
+    let stored = [];
+    try { stored = (JSON.parse(localStorage.getItem(LS_TRANSCRIPT)) || {}).entries || []; } catch (_) { stored = []; }
+    const seen = new Set();
+    const out = [];
+    for (const e of mine.concat(stored)) {          // mine 在前：编辑过的版本优先
+      if (!e || typeof e !== 'object') continue;
+      const key = e.type === 'session' ? `s:${e.ts}` : `l:${e.key || `${e.ts}|${e.start}|${e.text}`}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(e);
+    }
+    out.sort((a, b) => (a.ts || 0) - (b.ts || 0));  // 按时间排好，跨标签页也不会乱
+    let list = out;
     if (list.length > MAX_ENTRIES) list = list.slice(list.length - MAX_ENTRIES);
     try {
       localStorage.setItem(LS_TRANSCRIPT, JSON.stringify({ version: 1, entries: list }));
     } catch (_) { toast('浏览器存储已满，请导出后清空'); }
     return list;
+  },
+  // 删单句必须显式从存储里删，否则下一次合并又会被读回来
+  removeEntry(key) {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LS_TRANSCRIPT)) || {};
+      const list = (raw.entries || []).filter((e) => e.key !== key);
+      localStorage.setItem(LS_TRANSCRIPT, JSON.stringify({ version: 1, entries: list }));
+    } catch (_) {}
+  },
+  // 清空前留一份备份，可以撤销
+  backup() {
+    try {
+      const now = localStorage.getItem(LS_TRANSCRIPT);
+      if (now) localStorage.setItem(LS_TRANSCRIPT_BACKUP, now);
+      return true;
+    } catch (_) { return false; }
+  },
+  restoreBackup() {
+    try {
+      const backup = localStorage.getItem(LS_TRANSCRIPT_BACKUP);
+      if (!backup) return false;
+      localStorage.setItem(LS_TRANSCRIPT, backup);
+      return true;
+    } catch (_) { return false; }
   },
 };
 
@@ -296,6 +337,8 @@ let entries = compact(store.entries());     // 已定稿的行 + 段落分隔（
 let live = [];                     // 当前会话的实时行（服务端每次给全量）
 let ws = null, audioCtx = null, node = null, stream = null, source = null, gain = null;
 let recording = false, startedAt = 0, firstResultAt = 0, keySeq = 0;
+const TAB_ID = Math.random().toString(36).slice(2, 7);   // 多标签页时避免 key 相撞
+const newKey = () => `k${Date.now()}-${TAB_ID}-${++keySeq}`;
 let pendingSessionTs = null;      // 本次录音的开始时间：等真有句子了再写分隔线
 let pcmQueue = [];                // WS 尚未连上时暂存的 PCM（否则录音开头会被丢掉）
 let lastSessionMarker = null;     // 收尾时把「录音秒数 / 识别秒数」回填到分隔线
@@ -346,7 +389,7 @@ function compact(list) {
 function allLines() {
   return storedLines().concat(live.map((l) => Object.assign({}, l, { final: true })));
 }
-function persist() { entries = store.saveEntries(compact(entries)); }
+function persist() { entries = store.mergeEntries(compact(entries)); }
 
 // ---------------------------------------------------------------- 渲染
 
@@ -407,7 +450,8 @@ function render() {
       kill.className = 'kill'; kill.textContent = '✕'; kill.title = '删除这一句';
       kill.onclick = () => {
         entries = entries.filter((e) => e.key !== l.key);
-        persist(); render();
+        store.removeEntry(l.key);        // 显式删存储，否则合并时会被读回来
+        render();
       };
       nodes.push(kill);
     }
@@ -566,7 +610,7 @@ function persistLive(prefix) {
   if (!live.length) return;
   setStatus((prefix || '') + '正在保存已识别内容…', 'busy');
   const lines = live.map((l) => Object.assign({ type: 'line' }, l,
-    { key: `k${Date.now()}-${++keySeq}`, partial: true }));
+    { key: newKey(), partial: true }));
   if (pendingSessionTs) {
     entries = entries.concat([{ type: 'session', ts: pendingSessionTs, label: dayTime(pendingSessionTs) }]);
     pendingSessionTs = null;
@@ -595,8 +639,7 @@ function handleMessage(msg) {
     return;
   }
   if (msg.type === 'final') {
-    const lines = (msg.lines || []).map((l) => Object.assign({ type: 'line' }, l,
-      { key: `k${Date.now()}-${++keySeq}` }));
+    const lines = (msg.lines || []).map((l) => Object.assign({ type: 'line' }, l, { key: newKey() }));
     if (lines.length && pendingSessionTs) {
       const marker = { type: 'session', ts: pendingSessionTs, label: dayTime(pendingSessionTs) };
       entries = entries.concat([marker]);
@@ -752,8 +795,13 @@ $('jsonBtn').onclick = () => download(`转写-${stamp()}.json`,
   'application/json');
 $('clearBtn').onclick = () => {
   if (!entries.length) return toast('已经是空的');
-  if (!confirm(`确定清空本机的 ${storedLines().length} 句转写吗？清空后无法恢复（建议先导出）。`)) return;
-  entries = []; live = []; persist(); render(); setStatus('已清空', ''); toast('已清空本机转写');
+  if (!confirm(`确定清空本机的 ${storedLines().length} 句转写吗？\n\n（会先自动备份一份，清空后可以点「撤销清空」找回）`)) return;
+  store.backup();
+  try { localStorage.removeItem(LS_TRANSCRIPT); } catch (_) {}
+  entries = []; live = []; render();
+  $('undoBtn').style.display = '';
+  setStatus('已清空（可撤销）', '');
+  toast('已清空本机转写；需要的话点「撤销清空」');
 };
 
 // ---------------------------------------------------------------- 词库面板
@@ -790,6 +838,21 @@ fetch('/health').then((r) => r.json()).then((j) => {
     $('diarWrap').style.opacity = '.5';
   }
 }).catch(() => {});
+
+$('undoBtn').onclick = () => {
+  if (!store.restoreBackup()) return toast('没有可恢复的备份');
+  entries = compact(store.entries());
+  $('undoBtn').style.display = 'none';
+  render();
+  toast('已恢复清空前的内容');
+};
+
+// 别的标签页改了内容 → 这边跟着刷新（而不是各写各的互相覆盖）
+window.addEventListener('storage', (e) => {
+  if (e.key !== LS_TRANSCRIPT) return;
+  entries = compact(store.entries());
+  render();
+});
 
 render();
 renderLexicon();
