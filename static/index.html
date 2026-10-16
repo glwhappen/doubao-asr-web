@@ -528,11 +528,62 @@ output.addEventListener('click', (e) => {
   startEdit(row, row.dataset.key);
 });
 
+// ---------------------------------------------------------------- 连接（含断线重连）
+
+function connectSocket(first) {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?engine=auto');
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => {
+    reconnectAttempts = 0;
+    // 会话开始先把本机词库/声纹库发给服务端（只在这次会话里用，服务端不保存）
+    ws.send(JSON.stringify({ type: 'config', lexicon: lex, diarize: $('diarChk').checked,
+                             voiceprints: $('diarChk').checked ? voiceprints : [] }));
+    flushQueue();                                 // 把没连上时攒下的音频补发出去
+    setStatus(first ? '已连接，请说话' : '已重连，接着说', 'on');
+    if (!first) toast('已自动重连；断线期间的内容会另起一段');
+  };
+  ws.onmessage = (ev) => { try { handleMessage(JSON.parse(ev.data)); } catch (_) {} };
+  ws.onclose = onSocketClosed;
+  ws.onerror = () => { lastSocketError = '连接出错'; };
+}
+
+function onSocketClosed() {
+  if (!recording) return;                        // 自己点停止造成的关闭，正常
+  persistLive('（连接中断前）');                  // 关键：先把已经识别出来的内容存进本机，别丢
+  if (reconnectAttempts >= 3) {
+    stop(true);
+    setStatus(lastSocketError || '连接断开，已保存已识别的内容；点「开始说话」继续', 'err');
+    return;
+  }
+  reconnectAttempts += 1;
+  pendingSessionTs = Date.now();                  // 重连后的内容算新的一段
+  setStatus(`连接断开，正在重连（${reconnectAttempts}/3）…`, 'busy');
+  setTimeout(() => { if (recording) connectSocket(false); }, 800 * reconnectAttempts);
+}
+
+// 连接断开时把"只存在于内存里的这几句"落盘，避免白说
+function persistLive(prefix) {
+  if (!live.length) return;
+  setStatus((prefix || '') + '正在保存已识别内容…', 'busy');
+  const lines = live.map((l) => Object.assign({ type: 'line' }, l,
+    { key: `k${Date.now()}-${++keySeq}`, partial: true }));
+  if (pendingSessionTs) {
+    entries = entries.concat([{ type: 'session', ts: pendingSessionTs, label: dayTime(pendingSessionTs) }]);
+    pendingSessionTs = null;
+  }
+  entries = entries.concat(lines);
+  persist();
+  live = [];
+  render();
+}
+let reconnectAttempts = 0;
+let lastSocketError = null;
+
 // ---------------------------------------------------------------- 录音 + 会话
 
 function handleMessage(msg) {
   if (msg.type === 'status') { setStatus(msg.message, 'busy'); return; }
-  if (msg.type === 'error') { setStatus(msg.message, 'err'); toast(msg.message); return; }
+  if (msg.type === 'error') { lastSocketError = msg.message; setStatus(msg.message, 'err'); toast(msg.message); return; }
   if (msg.type === 'update') {
     live = msg.lines || [];
     if (!firstResultAt && live.length) {
@@ -578,6 +629,7 @@ function flushQueue() {
 
 async function start() {
   live = []; firstResultAt = 0; pcmQueue = []; sessionVectors = {};
+  reconnectAttempts = 0; lastSocketError = null;
   pendingSessionTs = Date.now();     // 先记着，等识别出内容再落分隔线（空录音不留痕）
   render();
   setStatus('请求麦克风…', 'busy');
@@ -594,18 +646,7 @@ async function start() {
   gain.gain.value = 0;
   source.connect(node); node.connect(gain); gain.connect(audioCtx.destination);
 
-  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?engine=auto');
-  ws.binaryType = 'arraybuffer';
-  ws.onopen = () => {
-    // 会话开始先把本机词库发给服务端（只在这次会话里用，服务端不保存）
-    ws.send(JSON.stringify({ type: 'config', lexicon: lex, diarize: $('diarChk').checked,
-                             voiceprints: $('diarChk').checked ? voiceprints : [] }));
-    flushQueue();                                 // 把连上之前攒下的音频补发出去
-    setStatus('已连接，请说话', 'on');
-  };
-  ws.onmessage = (ev) => { try { handleMessage(JSON.parse(ev.data)); } catch (_) {} };
-  ws.onclose = () => { if (recording) { setStatus('连接已断开', 'err'); stop(true); } };
-  ws.onerror = () => setStatus('连接出错', 'err');
+  connectSocket(true);
 
   node.port.onmessage = (ev) => {
     if (ev.data.peak !== undefined) {
@@ -638,12 +679,14 @@ async function stop(silent) {
   try { if (audioCtx) await audioCtx.close(); } catch (_) {}
   audioCtx = node = source = gain = stream = null;
 
-  if (ws && ws.readyState === 1) {
-    if (!silent) setStatus('整理最终结果…', 'busy');
-    ws.send(JSON.stringify({ type: 'stop' }));
-    setTimeout(() => { try { ws && ws.close(); } catch (_) {} }, 12000);
-  }
+  const socket = ws;
   ws = null;
+  // 只关"这一次录音"的连接；服务端在发完 final 后会自己断开，这里不强关。
+  // （以前这里用 setTimeout + 全局 ws，会在 12 秒后误关掉下一次录音的新连接）
+  if (socket && socket.readyState === 1) {
+    if (!silent) setStatus('整理最终结果…', 'busy');
+    socket.send(JSON.stringify({ type: 'stop' }));
+  }
 }
 
 toggle.onclick = async () => {
