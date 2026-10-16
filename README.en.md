@@ -79,12 +79,35 @@ WebSocket → print text) with retry built in. See the `/how` page for the full 
 A browser **cannot** talk to the upstream directly: it requires custom WebSocket handshake
 headers (`proto-version: v2`), which browsers cannot set. That is why a small server is required.
 
+## Engines (auto / online / offline)
+
+The page has a three-way engine switch (also `?engine=`):
+
+| Mode | Path | Notes |
+|---|---|---|
+| **auto** (default) | `engine=auto` | cloud first; on handshake/session failure falls back to the offline engine, then FunASR |
+| **online** | `engine=cloud` | cloud only (best accuracy, punctuation, hotword context) |
+| **offline** | `engine=offline` | local ONNX model only — works with no network, real sentence timestamps + quality score |
+
+Every session records which engine was used (shown on the session divider) so you can compare results.
+
 ## Offline
 
-Doubao's own on-device model cannot be reused (private per-tensor format, statically linked
-Flute engine, authenticated model download — and the Windows 0.9.2.7 build does not even ship it).
-Use FunASR / sherpa-onnx / whisper.cpp instead; `engine=local` in this project already
-integrates a local FunASR engine as a fallback.
+The bundled offline engine (`offline_engine.py`) does **not** reuse Doubao's own on-device model
+(that one is a private, encrypted SAMI container and its engine only ships in the macOS/Android builds).
+Instead it uses **ByteDance's own ASR model, distributed publicly** in plain ONNX through their
+algorithm-hosting API (`effect.snssdk.com/model/api/arithmetics`, no auth):
+
+```bash
+./tools/fetch_offline_asr_models.sh        # ~310MB from a public CDN
+./venv/bin/pip install -r requirements-offline.txt
+./venv/bin/python offline_engine.py        # 127.0.0.1:4272
+```
+
+Architecture: 80-dim log-mel → LFR(7,6)=560 → encoder → CIF decoder (greedy) → punctuation model;
+energy VAD segmentation with partial (unfinalised) results while you speak. Chinese test fixtures
+transcribe exactly; ~0.13x realtime on CPU. Other fallbacks (FunASR via `engine=local`,
+sherpa-onnx, whisper.cpp) still work.
 
 ## License
 

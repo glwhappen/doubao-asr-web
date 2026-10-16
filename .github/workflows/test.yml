@@ -19,4 +19,4 @@ jobs:
       - name: 单元测试（不联网：分段/合并/词库）
         run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: 语法检查
-        run: python -m compileall -q server.py examples/asr_min.py tools/build_how_page.py
+        run: python -m compileall -q server.py offline_engine.py examples/asr_min.py tools/build_how_page.py

@@ -108,6 +108,7 @@
   <a href="#errors">1.4 状态码与错误处理</a>
   <a href="#language">1.5 语言能力（实测）</a>
   <a href="#offline-doubao">1.6 豆包的离线识别是怎么做的</a>
+  <a href="#offline-ons">1.7 离线模型能从公开渠道拿到（本项目已内置离线引擎）</a>
   <a href="#auth">2. 凭据从哪来（为什么不用登录）</a>
   <a href="#clients">3. 自己写客户端（Python / Node / Go）</a>
   <a href="#integrate">4. 集成到你的项目</a>
@@ -211,7 +212,8 @@ ls "$WINEPREFIX/drive_c/Program Files/DoubaoIME/versions/v0.9.2.7/"</code></pre>
   </table>
   <div class="note">
     <b>一句话结论：语音识别 = <code>ImeService.exe</code>（采集+调度） + <code>audioeffect-mt.dll</code>（SAMI 协议栈）</b>，
-    真正的声学模型在字节服务端。安装包里没有任何声学模型文件（这点很关键，见 <a href="#offline-doubao">1.6</a>）。
+    真正的声学模型在字节服务端。安装包里没有任何声学模型文件（这点很关键，见 <a href="#offline-doubao">1.6</a>）；
+    但这些模型能从公开渠道拿到，见 <a href="#offline-ons">1.7</a>。
   </div>
   <h4>从编译期路径能看出的源码结构</h4>
   <p>二进制里残留了开发机的源码路径，等于给了目录树：</p>
@@ -336,7 +338,7 @@ ls "$WINEPREFIX/drive_c/Program Files/DoubaoIME/versions/v0.9.2.7/"</code></pre>
         <td><span class="pill no">无</span></td><td><span class="pill ok">有</span></td><td><span class="pill ok">有</span></td></tr>
     <tr><td>SAMI 的本地 worker</td>
         <td><code>speech_v2/asr/offline/{asr_off_singleton,asr_off_worker}.cpp</code>、<code>capi/flute/asr/flute_asr.cpp</code></td>
-        <td><span class="pill no">只有 online/*</span></td><td><span class="pill ok">有</span></td><td><span class="pill ok">有</span></td></tr>
+        <td><span class="pill no">有调度、无引擎</span></td><td><span class="pill ok">有</span></td><td><span class="pill ok">有</span></td></tr>
     <tr><td>模型下载管理</td>
         <td>应用侧 <code>OimeOfflineModel</code> 模块：<code>ASROfflineModel{Manager,FileStore,PathResolver,MetaInfoService,Manifest}</code>、
             通知 <code>start/pause/resume/retry/requestDelete/updateOfflineModelState</code>、
@@ -361,12 +363,45 @@ up_proj.bin / down_proj.bin / v_proj.bin / swiglu.bin / o_proj ...   权重张�
     <li>时间参数：<code>finish_wait_offline_time</code> / <code>offline_wait_online_time</code> / <code>max_wait_switch_offline_time</code></li>
     <li>应用侧：<code>openASRPanel canceled: network disconnected, offlineModelStatus=</code>、<code>Skip smart text enable prompt: reason=offline_result</code></li>
   </ul>
-  <div class="note bad"><b>为什么拿不过来用：</b>
-    ① 模型是私有逐张量格式，引擎里写死了张量名，版本一变就对不上；
-    ② Flute 静态编进客户端，没有任何公开 API；
-    ③ 模型包要从字节服务器鉴权下载。
-    <br>但<b>架构可以照抄</b>，落地就用开源等价物（见 <a href="#offline">第 6 节</a>）。
+  <div class="note bad"><b>为什么不能直接拿客户端里的那份用：</b>
+    ① 模型是私有逐张量格式（SAMI 容器，载荷加密，熵 ≈ 8.0），引擎里写死了张量名；
+    ② Flute 静态编进客户端（macOS 主程序 / Android 的 libaudioeffect.so），Windows 包里根本没有；
+    ③ 客户端要的模型名是加密的（<code>name_sec</code>），扒不出它到底用哪个。
+    <br><b>但这不等于拿不到可用的模型</b>——字节的算法分发接口是公开的，里面有同架构的明文 ONNX，见 <a href="#offline-ons">1.7</a>。
   </div>
+
+  <h3 id="offline-ons">1.7 离线模型能从公开渠道拿到（本项目已内置离线引擎）</h3>
+  <p>本以为“只有私有引擎能吃这些模型”，结果发现字节把一批模型放在<b>公开算法分发接口</b>上，<b>无需任何鉴权</b>：</p>
+  <pre><code class="text">GET https://effect.snssdk.com/model/api/arithmetics?sdk_version=25.0.0
+→ {"status_code":0,"data":{"arithmetics":{"cakeCook":[
+     {"name":"lv_asr_support","version":"1.2",
+      "file_url":{"url_list":["https://n98-lf-effect-aweme-302-ncdn.byteeffecttos.com/obj/ies.fe.effect/&lt;md5&gt;?module=model"],
+                   "zip_url_list":["..."]}}]}}}
+
+# 参数必须是小写 sdk_version（写 SdkVersion 会报 missing required parameter），只能 GET（POST 404）
+# sdk_version 就是“面板版本”，值越大条目越多：1.0.2→3、15.0.0→875、25.0.0→1128（上限）</code></pre>
+  <p>1128 个模型里语音相关的 19 个。其中 <code>lv_asr_support</code> 是<b>明文 ONNX 全套</b>（另一个
+  <code>lv_grow_voice_local_asr</code> 是 7z 套 SAMI 私有容器，需要闭源引擎，没拿它）：</p>
+  <table>
+    <tr><th>文件</th><th>大小</th><th>作用</th></tr>
+    <tr><td><code>asr-model-encoder.onnx</code></td><td>101 MB</td><td><code>speech[1,T,560]</code> → <code>enc[1,T,512]</code></td></tr>
+    <tr><td><code>asr-model-decoder.onnx</code></td><td>60 MB</td><td><code>enc</code> → <code>logits[1,L,8404]</code> + <code>us_cif_peak</code>（CIF 架构）</td></tr>
+    <tr><td><code>asr-model-classifier.onnx</code></td><td>10.5 MB</td><td>质量分（Dispatcher 用，<code>strategy.json</code> 里 <code>quality_score: 0.83</code>）</td></tr>
+    <tr><td><code>asr-punc.onnx</code> + <code>asr-punc-token.txt</code></td><td>180 MB / 2.3 MB</td><td>标点（3 类，词表是竖线分隔的 27 万条）</td></tr>
+    <tr><td><code>asr-model-token.txt</code></td><td>75 KB</td><td>8404 个 token（<code>&lt;blank&gt; 0</code> 空格分隔）</td></tr>
+    <tr><td><code>asr-itn-fst.fst</code></td><td>540 KB</td><td>逆文本归一化 FST</td></tr>
+  </table>
+  <p>输入 <b>560 = 80 维 mel × 7（LFR m=7,n=6）</b>，和 FunASR Paraformer 同构；<code>us_cif_peak</code> 说明是
+  <b>CIF / ntp_cif</b>（和豆包输入法 Flute 里的模块同源），只是这里是明文 ONNX，<b>onnxruntime 直接能跑</b>。</p>
+  <div class="note ok"><b>实测（本机 CPU，纯 numpy 前端 + onnxruntime）：</b>
+    「你好，这是微信语音接口测试，今天阳光很好。」 → <code>你好这是微信语音接口测试今天阳光很好</code>（全对）；
+    「现在进行第二次接口验证，苹果香蕉橘子。」 → <code>现在进行第二次接口验证苹果香蕉橘子</code>（全对）；
+    中英混说中文全对、英文大体对；日语是乱码（中文模型）。6 秒音频 encoder 0.49s + decoder 0.32s，
+    <b>约 0.13× 实时</b>。
+  </div>
+  <pre><code class="sh"># 一条命令把模型拉齐（约 310MB，走公开 CDN）
+./tools/fetch_offline_asr_models.sh            # 默认取 lv_asr_support
+./tools/fetch_offline_asr_models.sh --list     # 先看看有哪些语音模型</code></pre>
 
   <h2 class="sec" id="auth">2. 凭据从哪来（为什么不用登录）</h2>
   <p>豆包输入法没有任何账号体系参与语音识别，身份是<b>「应用身份 + 设备身份」</b>：</p>
@@ -546,7 +581,33 @@ async function transcribeFile(path) {
     太短的句子（&lt;0.6s）算不出可靠声纹，会继承上一位说话人。</div>
 
   <h2 class="sec" id="offline">6. 离线 / 本地方案</h2>
-  <p>豆包的离线模型拿不到（<a href="#offline-doubao">见 1.6</a>），所以"断网也能用"要靠自己搭。三种可行路线：</p>
+  <p>本项目自带<b>离线引擎</b>（<code>offline_engine.py</code>）：用的是字节公开分发的 ASR 模型
+  （<a href="#offline-ons">见 1.7</a>），纯 ONNX + onnxruntime，<b>不联网、不依赖豆包客户端</b>。
+  网页上可以三档切换，方便对比效果：</p>
+  <table>
+    <tr><th>档位</th><th>走哪条路</th><th>特点</th></tr>
+    <tr><td><b>自动</b>（默认）</td><td><code>engine=auto</code>：云端优先，握手失败/会话中断/重连失败 → 自动切离线引擎（再不行才用 FunASR）</td><td>日常用</td></tr>
+    <tr><td><b>在线</b></td><td><code>engine=cloud</code>：只用豆包云端</td><td>最准、带标点、有热词上下文</td></tr>
+    <tr><td><b>离线</b></td><td><code>engine=offline</code>：只用本机 ONNX 模型</td><td>断网可用、有真实句级时间戳与质量分；英文弱一些</td></tr>
+  </table>
+  <p>每次会话的分隔线上会标出用了哪档（如 <code>2026-10-17 03:33 · 离线 · 录音 43s / 识别到 42s</code>），方便回溯对比。</p>
+  <h3>离线引擎怎么跑</h3>
+  <pre><code class="sh"># 1) 下模型（约 310MB，公开 CDN；详见 1.7）
+./tools/fetch_offline_asr_models.sh
+
+# 2) 装依赖 + 起服务（默认监听 127.0.0.1:4272）
+./venv/bin/pip install -r requirements-offline.txt
+./venv/bin/python offline_engine.py                 # 前台
+./venv/bin/python offline_engine.py --selftest tests/fixture-6s.wav   # 不进服务，直接自测
+
+# 3) 让网页用上它（.env）
+DOUBAO_OFFLINE_ENGINE=http://127.0.0.1:4272
+
+# 4) 生产用 systemd（仓库外，部署环境里）
+systemctl enable --now doubao-offline-asr</code></pre>
+  <p>离线引擎的切句策略：能量 VAD（自适应底噪）+ 停顿 0.6s 断句 + 单段上限 12s；
+  一段话说到一半会每约 1.2s 给一次「未定稿」结果，前端表现为最后一行还在变，停顿后定稿并加标点。</p>
+  <h3>另外两个开源兜底（可选）</h3>
   <table>
     <tr><th>方案</th><th>特点</th><th>适合</th></tr>
     <tr><td><b>FunASR</b>（ModelScope / 阿里）</td>
@@ -559,18 +620,20 @@ async function transcribeFile(path) {
         <td>多语种（含日语）最强，代价是模型大、CPU 慢、实时性差</td>
         <td>离线文件转写、多语种</td></tr>
   </table>
-  <h3>本 Demo 的本地兜底（已经接好了）</h3>
-  <p>服务端复用了本机已有的 FunASR 引擎（<code>/stream</code> 流式接口），云端失败时自动接管：</p>
+  <h3>本 Demo 的降级链（已经接好了）</h3>
+  <p>云端失败时依次尝试：离线引擎 → FunASR 本地引擎（配了才用）。配置：</p>
   <pre><code class="sh"># .env
-DOUBAO_LOCAL_ENGINE=http://127.0.0.1:4271        # 本地 FunASR 引擎
-DOUBAO_LOCAL_ENGINE_TOKEN=…                      # 引擎的 x-engine-token
+DOUBAO_OFFLINE_ENGINE=http://127.0.0.1:4272      # 离线引擎（本机 ONNX，默认就是它）
+DOUBAO_LOCAL_ENGINE=http://127.0.0.1:4271        # 可选：FunASR 引擎（最后兜底）
+DOUBAO_LOCAL_ENGINE_TOKEN=…                      # FunASR 引擎的 x-engine-token
 DOUBAO_CLOUD_RETRY=2                             # 云端抖动时的重连次数
 DOUBAO_CONTEXT=1                                 # 是否把热词上下文带给上游
 
 # 选择引擎
-wss://<你的域名>/ws?engine=auto    # 默认：云端优先，失败降级本地
-wss://<你的域名>/ws?engine=cloud   # 只用云端
-wss://<你的域名>/ws?engine=local   # 只用本地（离线可用）</code></pre>
+wss://&lt;你的域名&gt;/ws?engine=auto      # 默认：云端优先，失败自动降级
+wss://&lt;你的域名&gt;/ws?engine=cloud     # 只用云端（=?engine=online 等价）
+wss://&lt;你的域名&gt;/ws?engine=offline   # 只用离线引擎（本机 ONNX）
+wss://&lt;你的域名&gt;/ws?engine=local     # 只用 FunASR 引擎</code></pre>
   <h3>自己搭一个本地 ASR（FunASR 最小示例）</h3>
   <pre><code class="python"># 引擎侧（本机 127.0.0.1:4271 在跑的就是这套）：FunASR 的流式 paraformer + VAD + 标点
 from funasr import AutoModel

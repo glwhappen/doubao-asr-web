@@ -50,6 +50,15 @@
   #toggle{min-width:150px;font-weight:600;background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
   #toggle.rec{background:var(--rec);border-color:var(--rec)}
   .status{color:var(--dim);font-size:13px;display:flex;align-items:center;gap:8px}
+  /* 引擎选择（自动/在线/离线）：紧贴录音条右侧的小分段控件，不占上文空间 */
+  .seg{display:inline-flex;align-items:center;border:1px solid var(--btn-border);border-radius:999px;
+       background:var(--btn);padding:2px;gap:2px}
+  .seg button{all:unset;cursor:pointer;font-size:12px;line-height:1;padding:5px 10px;border-radius:999px;
+              color:var(--dim);white-space:nowrap}
+  .seg button:hover{color:var(--fg)}
+  .seg button.on{background:var(--fg);color:var(--bg);font-weight:600}
+  .seg.seg-off button.on{background:#f59e0b;color:#1a1a1a}
+  .seg small{display:none}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--dim2)}
   .dot.on{background:var(--ok);box-shadow:0 0 0 4px rgba(61,220,151,.15);animation:pulse 1.4s infinite}
   .dot.busy{background:var(--warn)} .dot.err{background:var(--err)}
@@ -156,6 +165,12 @@
       <button id="toggle">开始说话</button>
       <div id="meter"><i></i></div>
       <div class="status"><span id="dot" class="dot"></span><span id="statusText">未开始</span></div>
+      <div class="seg" id="engineSeg"
+           title="识别引擎：自动＝云端优先，失败自动切到离线；在线＝只用豆包云端；离线＝只用本机模型（不联网，可断网用）">
+        <button type="button" data-engine="auto">自动</button>
+        <button type="button" data-engine="online">在线</button>
+        <button type="button" data-engine="offline">离线</button>
+      </div>
     </div>
     <label class="opt" id="diarWrap" title="用本地模型（pyannote 分割 + 3D-Speaker 声纹）区分是谁在说话">
       <input type="checkbox" id="diarChk"> 区分说话人（多人对话时给每句标「谁说的」，点标签可改名）
@@ -163,6 +178,7 @@
   </section>
   <div class="hintblock">
     首次使用需授权麦克风；<b>录音不落盘</b>，识别在服务端完成后只把文字存进本机浏览器。<br>
+    右上角可切引擎：<b>自动</b>（云端优先，失败自动切离线）、<b>在线</b>（豆包云端）、<b>离线</b>（本机模型，不联网）。<br>
     已定稿的句子可以<b>点文字直接改</b>（会记住你的改法），行尾 ✕ 可删除单句；只有点「清空」才会删掉历史。
   </div>
 
@@ -225,6 +241,46 @@
 const $ = (id) => document.getElementById(id);
 const output = $('output'), toggle = $('toggle'), dot = $('dot'), statusText = $('statusText');
 const meter = $('meter').firstElementChild, tagLatency = $('tagLatency'), tagStat = $('tagStat');
+
+// ---------------------------------------------------------------- 引擎选择（自动 / 在线 / 离线）
+
+const engineSeg = $('engineSeg');
+const LS_ENGINE = 'doubao-asr-engine';          // 'auto' / 'online' / 'offline'
+let engineChoice = (() => {
+  const saved = localStorage.getItem(LS_ENGINE);
+  return ['auto', 'online', 'offline'].includes(saved) ? saved : 'auto';
+})();
+
+function renderEngine() {
+  [...engineSeg.querySelectorAll('button')].forEach((b) => b.classList.toggle('on', b.dataset.engine === engineChoice));
+  engineSeg.classList.toggle('seg-off', engineChoice === 'offline');
+}
+
+engineSeg.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-engine]');
+  if (!btn) return;
+  const next = btn.dataset.engine;
+  if (next === engineChoice) return;
+  engineChoice = next;
+  localStorage.setItem(LS_ENGINE, next);
+  renderEngine();
+  const hint = { auto: '云端优先，失败自动切离线', online: '只用豆包云端（在线）', offline: '只用本机模型，不联网' }[next];
+  toast(recording ? `已选「${btn.textContent}」——下次开始说话生效` : `识别引擎：${btn.textContent}（${hint}）`);
+});
+renderEngine();
+
+function showEngine(engine) {
+  if (!engine) return;
+  const label = { cloud: 'doubao-ime', offline: '离线模型', local: 'FunASR' }[engine] || engine;
+  const el = $('tagModel');
+  el.textContent = label;
+  el.dataset.engine = engine;
+  el.title = ({
+    cloud: '豆包云端识别（走输入法内部通道，需联网）',
+    offline: '本机离线模型（字节 ONNX，纯本地，不联网）',
+    local: '本机 FunASR 引擎（服务端本地推理）',
+  })[engine] || '';
+}
 
 // ---------------------------------------------------------------- 本地存储（每人一份）
 
@@ -474,6 +530,7 @@ function render() {
       const sep = document.createElement('div');
       sep.className = 'sep';
       let label = e.label || dayTime(e.ts);
+      if (e.engine) label += ` · ${({ cloud: '在线', offline: '离线', local: '本机' })[e.engine] || e.engine}`;
       if (e.audio) {
         const gap = Math.max(0, (e.audio || 0) - (e.speech || 0));
         label += ` · 录音 ${e.audio.toFixed(0)}s / 识别到 ${(e.speech || 0).toFixed(0)}s`;
@@ -587,7 +644,8 @@ output.addEventListener('click', (e) => {
 // ---------------------------------------------------------------- 连接（含断线重连）
 
 function connectSocket(first) {
-  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?engine=auto');
+  const engine = engineChoice === 'online' ? 'cloud' : engineChoice;   // 服务端认 cloud/offline/auto
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?engine=' + engine);
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
     reconnectAttempts = 0;
@@ -638,9 +696,10 @@ let lastSocketError = null;
 // ---------------------------------------------------------------- 录音 + 会话
 
 function handleMessage(msg) {
-  if (msg.type === 'status') { setStatus(msg.message, 'busy'); return; }
+  if (msg.type === 'status') { showEngine(msg.engine); setStatus(msg.message, 'busy'); return; }
   if (msg.type === 'error') { lastSocketError = msg.message; setStatus(msg.message, 'err'); toast(msg.message); return; }
   if (msg.type === 'update') {
+    showEngine(msg.engine);
     live = msg.lines || [];
     if (!firstResultAt && live.length) {
       firstResultAt = performance.now();
@@ -651,6 +710,7 @@ function handleMessage(msg) {
     return;
   }
   if (msg.type === 'final') {
+    showEngine(msg.engine);
     const lines = (msg.lines || []).map((l) => Object.assign({ type: 'line' }, l, { key: newKey() }));
     if (lines.length && pendingSessionTs) {
       const marker = { type: 'session', ts: pendingSessionTs, label: dayTime(pendingSessionTs) };
@@ -663,6 +723,7 @@ function handleMessage(msg) {
     live = [];
     render();
     if (msg.speaker_vectors) sessionVectors = msg.speaker_vectors;
+    if (lastSessionMarker) lastSessionMarker.engine = msg.engine;    // 存下这次用的引擎，方便事后对比效果
     if (lastSessionMarker && msg.audio_seconds) {
       lastSessionMarker.audio = msg.audio_seconds;
       lastSessionMarker.speech = msg.recognized_seconds;
@@ -887,7 +948,11 @@ render();
 renderLexicon();
 renderVoiceprints();
 fetch('/health').then((r) => r.json()).then((j) => {
-  $('tagModel').textContent = j.app_key_ready ? 'doubao-ime · 就绪' : 'doubao-ime · 待初始化';
+  const off = j.offline_engine || {};
+  engineSeg.title += off.ok ? '\n\n离线引擎：已就绪' : `\n\n离线引擎：不可用（${off.reason || '未启动'}）`;
+  if (!off.ok) engineSeg.querySelector('[data-engine="offline"]').style.opacity = '.45';
+  const cur = $('tagModel').dataset.engine;
+  if (!cur) $('tagModel').textContent = j.app_key_ready ? 'doubao-ime · 就绪' : 'doubao-ime · 待初始化';
 }).catch(() => {});
 </script>
 </body>

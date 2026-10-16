@@ -13,7 +13,10 @@
 - 🗣️ **说话人分离 + 声纹库**（可选）：多人对话时**边录边给每句标「谁说的」**；
   有独立的 [**声纹管理页**](https://doubao.hsfp.cn/voice)（`/voice` 路径；本机即 `http://127.0.0.1:4416/voice`）——念几段话就注册一个人，
   以后录音**自动认出他并标真名**（跨录音有效，声纹只存本机）
-- 🌗 **亮/暗主题**、🛟 **离线兜底**（云端不可用时自动切本地 FunASR）
+- 🔌 **三档引擎可切换**：**自动**（云端优先，失败自动降级）/ **在线**（豆包云端）/ **离线**（本机 ONNX 模型，可断网）；
+  每次会话都记下用了哪档，方便对比效果
+- 🛟 **离线引擎已内置**：用的是字节**公开分发**的 ASR 模型（CIF 架构，与豆包输入法同源），纯 ONNX + onnxruntime，不依赖客户端
+- 🌗 **亮/暗主题**
 
 > ⚠️ **先看免责声明**：本项目调用的是豆包输入法客户端内部的**未公开接口**，仅供技术研究与个人自用。
 > 接口随时可能变更、可能触发风控。要用于产品或商用，请走 [火山引擎官方语音接口](https://www.volcengine.com/product/asr)
@@ -303,18 +306,38 @@ WantedBy=multi-user.target
 
 关掉它：页面取消勾选，或服务端不装模型（`/health` 会报 `diarization.available=false`，页面上该选项自动禁用）。
 
-## 离线方案
+## 三档引擎与离线运行
 
-豆包自己的端侧离线识别**拿不过来**（模型是私有逐张量格式、推理引擎 Flute 静态编译进客户端、模型包要鉴权下载；
-而且 Windows 版 0.9.2.7 里根本没有这套东西）。想要"断网也能用"，用开源等价物：
+网页右上角可切三档（也能用 `?engine=` 指定），方便**对比效果**：
 
-| 方案 | 特点 |
-|---|---|
-| **FunASR** | 中文好、带标点/VAD，CPU 约 1.5–2 倍实时；本项目的 `engine=local` 就是接它（`/stream` 流式接口） |
-| **sherpa-onnx** | 纯 ONNX 运行时，模型小、多语种（含日语）、跨平台 |
-| **whisper.cpp / faster-whisper** | 多语种最强，代价是模型大、CPU 慢 |
+| 档位 | 走哪条路 | 特点 |
+|---|---|---|
+| **自动**（默认） | `engine=auto` | 云端优先；握手失败 / 会话中断 / 重连失败 → 自动切离线引擎（再不行才 FunASR） |
+| **在线** | `engine=cloud` | 只用豆包云端：最准、带标点、支持热词上下文 |
+| **离线** | `engine=offline` | 只用本机 ONNX 模型：**断网可用**、有真实句级时间戳与质量分；英文弱一些 |
 
-本项目已内置降级逻辑：云端握手失败 / 会话中断 / 重连失败 → 自动切本地引擎继续转写（页面会提示）。
+每次会话的分隔线上会标出用了哪档（如 `2026-10-17 03:33 · 离线 · 录音 43s / 识别到 42s`），方便回溯。
+
+### 离线引擎（`offline_engine.py`）
+
+模型不是从豆包客户端里抠出来的，而是字节**公开算法分发接口**上的同架构明文 ONNX
+（`effect.snssdk.com/model/api/arithmetics`，无需鉴权；发现过程写在 `/how` 的 1.7 节）：
+
+```bash
+./tools/fetch_offline_asr_models.sh          # 下模型（约 310MB，走公开 CDN）
+./tools/fetch_offline_asr_models.sh --list    # 先看看有哪些语音模型
+./venv/bin/pip install -r requirements-offline.txt
+./venv/bin/python offline_engine.py           # 起服务（默认 127.0.0.1:4272）
+./venv/bin/python offline_engine.py --selftest tests/fixture-6s.wav   # 不进服务，直接自测
+```
+
+- 架构：80 维 log-mel → LFR(7,6)=560 维 → encoder → **CIF 解码器** → 贪心解码；`punc` 模型补标点，`classifier` 给质量分
+- 切句：能量 VAD（自适应底噪）+ 停顿 0.6s 断句 + 单段上限 12s；说话中每约 1.2s 回一次「未定稿」
+- 实测：中文样例**全对**，6 秒音频约 0.8s 出结果（纯 CPU，约 0.13× 实时）；日语/英文较弱
+- 服务端配置：`.env` 里 `DOUBAO_OFFLINE_ENGINE=http://127.0.0.1:4272`；`/health` 会报告它是否就绪
+
+另外两个开源兜底（可选）：**FunASR**（中文好、带 VAD/标点，本项目 `engine=local` 就是接它）、
+**sherpa-onnx**（多语种、真端侧）、**whisper.cpp**（多语种最强但慢）。
 
 ---
 
@@ -328,6 +351,7 @@ WantedBy=multi-user.target
 ./venv/bin/python tests/verify_session_lexicon.py    # 词库只对本次会话生效
 ./venv/bin/python tests/verify_diarization.py        # 两段不同人的音频 → 标签不同
 ./venv/bin/python tests/verify_voiceprint.py         # 注册声纹 → 下次自动认出这个人
+./venv/bin/python tests/verify_offline_engine.py     # 离线引擎 + 自动/在线/离线三档（10 项检查）
 
 # 改完示例代码后重新生成原理页
 ./venv/bin/python tools/build_how_page.py
@@ -336,8 +360,10 @@ WantedBy=multi-user.target
 目录结构：
 
 ```
-server.py                  FastAPI：凭据、上游 protobuf 会话、本地兜底、/ws
+server.py                  FastAPI：凭据、上游 protobuf 会话、三档引擎调度、/ws
+offline_engine.py          离线引擎：本机 ONNX 模型，流式 VAD 切句 + 标点（纯本地，不联网）
 diarization.py             说话人分离（sherpa-onnx：pyannote 分割 + 3D-Speaker 声纹 + 聚类）
+tools/fetch_offline_asr_models.sh  下载离线识别模型（公开 CDN）
 tools/fetch_diarization_models.sh  下载分离模型
 static/index.html          录音页面（前端逻辑全在这里）
 static/worklet.js          AudioWorklet：任意采样率 → 16k PCM16

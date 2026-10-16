@@ -59,6 +59,9 @@ WS_URL = os.environ.get("DOUBAO_CLOUD_WS", "wss://frontier-audio-ime-ws.doubao.c
 # 本地兜底引擎（复用本机 FunASR asr-engine）：云端不可用/报错时自动接管
 LOCAL_ENGINE_URL = os.environ.get("DOUBAO_LOCAL_ENGINE", "").rstrip("/")
 LOCAL_ENGINE_TOKEN = os.environ.get("DOUBAO_LOCAL_ENGINE_TOKEN", "")
+# 离线引擎（本机 ONNX 模型，见 offline_engine.py）：纯本地、不联网，模型是字节公开分发的
+OFFLINE_ENGINE_URL = os.environ.get("DOUBAO_OFFLINE_ENGINE", "http://127.0.0.1:4272").rstrip("/")
+OFFLINE_ENGINE_TOKEN = os.environ.get("DOUBAO_OFFLINE_ENGINE_TOKEN", "")
 LOCAL_CHUNK = 3200                 # 100ms 一批发给本地引擎
 USE_CONTEXT = os.environ.get("DOUBAO_CONTEXT", "1") != "0"   # 是否把热词上下文带给上游
 
@@ -606,12 +609,16 @@ def field_str(msg, num):
     return val[0].decode("utf-8", "replace") if isinstance(val[0], bytes) else val[0]
 
 
-class LocalSession:
-    """本地 FunASR 引擎会话（浏览器 PCM → asr-engine /stream）。
+class ChunkEngineSession:
+    """按「开流 → 喂块 → 收尾」HTTP 协议访问外部识别引擎的会话基类。
 
-    为什么要有它：豆包云端不可用、被限流、或干脆断网时，页面至少还能转写。
-    代价：本地引擎在 CPU 上约 1.85x 实时，且流式结果没有真时间戳（按字数估算）。
+    FunASR 的 asr-engine 和本项目自带的离线引擎（offline_engine.py）接口形状一致，
+    所以客户端逻辑都放这里；子类只改名字/地址和「返回结果怎么翻成前端要的行」。
     """
+
+    name = "engine"          # 对外报的引擎名
+    base_url = ""            # 引擎地址
+    token = ""               # 引擎鉴权 token（可空）
 
     def __init__(self, on_update, lexicon=None):
         self.on_update = on_update
@@ -627,23 +634,23 @@ class LocalSession:
 
     @property
     def engine(self):
-        return "local"
+        return self.name
 
     @property
     def headers(self):
-        return {"x-engine-token": LOCAL_ENGINE_TOKEN} if LOCAL_ENGINE_TOKEN else {}
+        return {"x-engine-token": self.token} if self.token else {}
 
     async def open(self, hotwords=()):
-        if not LOCAL_ENGINE_URL:
-            raise RuntimeError("未配置本地引擎（DOUBAO_LOCAL_ENGINE）")
-        self.client = httpx.AsyncClient(base_url=LOCAL_ENGINE_URL, timeout=180)
+        if not self.base_url:
+            raise RuntimeError(f"未配置{self.name}引擎地址")
+        self.client = httpx.AsyncClient(base_url=self.base_url, timeout=180)
         resp = await self.client.post("/stream", headers=self.headers, json={
             "language": "zh", "hotwords": " ".join(hotwords or []),
         })
         resp.raise_for_status()
         self.sid = resp.json()["session_id"]
         self.sender = asyncio.create_task(self._send_loop())
-        log.info("本地引擎会话已建立 sid=%s", self.sid)
+        log.info("%s 引擎会话已建立 sid=%s", self.name, self.sid)
 
     async def _send_loop(self):
         while True:
@@ -659,10 +666,13 @@ class LocalSession:
             except Exception as exc:                 # noqa: BLE001
                 log.warning("本地引擎喂数据失败：%r", exc)
                 continue
-            text = (data.get("text") or "").strip()
-            if text and text != self.text:
-                self.text = text
-                await self.on_update(self._live_lines(text))
+            try:
+                lines = self.lines_from(data, final=False)
+            except Exception as exc:                 # noqa: BLE001
+                log.warning("%s 结果解析失败：%r", self.name, exc)
+                continue
+            if lines:
+                await self.on_update(lines)
 
     async def push(self, frame: bytes, state: int = 0):
         self.bytes_in += len(frame)
@@ -723,10 +733,15 @@ class LocalSession:
         try:
             resp = await self.client.post(f"/stream/{self.sid}/finish", headers=self.headers)
             resp.raise_for_status()
-            return self._final_lines(resp.json()), None
+            return self.lines_from(resp.json(), final=True), None
         except Exception as exc:                     # noqa: BLE001
-            log.warning("本地引擎收尾失败：%r", exc)
-            return self._live_lines(self.text), f"本地引擎收尾失败：{exc}"
+            log.warning("%s 引擎收尾失败：%r", self.name, exc)
+            fallback = []
+            if self.text:
+                fallback = [{"text": self.text, "start": 0.0,
+                             "end": round(self.bytes_in / (SAMPLE_RATE * 2), 2),
+                             "ts": int(self.base_ts * 1000), "final": True}]
+            return fallback, f"{self.name} 引擎收尾失败：{exc}"
 
     async def close(self):
         if self.sender and not self.sender.done():
@@ -742,6 +757,72 @@ class LocalSession:
     @property
     def dead(self):
         return False
+
+    def lines_from(self, data, final):
+        """把引擎返回的 JSON 翻成前端要的行（子类实现）。"""
+        raise NotImplementedError
+
+
+class LocalSession(ChunkEngineSession):
+    """本机 FunASR 引擎（asr-engine /stream）。
+
+    代价：CPU 上约 1.85x 实时，且流式不给真时间戳（按已收字节估算）。
+    """
+
+    name = "local"
+    base_url = LOCAL_ENGINE_URL
+    token = LOCAL_ENGINE_TOKEN
+
+    def lines_from(self, data, final):
+        if final:
+            return self._final_lines(data)
+        text = (data.get("text") or "").strip()
+        if not text or text == self.text:
+            return []
+        self.text = text
+        return self._live_lines(text)
+
+
+class OfflineSession(ChunkEngineSession):
+    """离线引擎（offline_engine.py，本机 ONNX 模型）。
+
+    和云端不同：本地模型给得出**真实句级时间戳**和**标点**，但要等停顿才定稿；
+    说话期间每隔约 1.2s 回一条「未定稿」（前端表现为最后一行还在变）。
+    """
+
+    name = "offline"
+    base_url = OFFLINE_ENGINE_URL
+    token = OFFLINE_ENGINE_TOKEN
+    _seg_end = 0.0
+
+    def lines_from(self, data, final):
+        lines = []
+        for item in data.get("sentences") or []:
+            raw = (item.get("text") or "").strip()
+            if not raw:
+                continue
+            fixed, hits = self._fix(raw)
+            start = (item.get("start") or 0) / 1000
+            end = (item.get("end") or 0) / 1000
+            self._seg_end = max(self._seg_end, end)
+            line = {"text": fixed, "start": round(start, 2), "end": round(end, 2),
+                    "ts": int((self.base_ts + start) * 1000), "final": True}
+            if item.get("quality") is not None:
+                line["quality"] = item["quality"]
+            if hits:
+                line.update(orig=raw, fixes=hits)
+            lines.append(line)
+        partial = (data.get("partial") or "").strip()
+        if partial and not final and all(l["text"] != partial for l in lines):
+            fixed, hits = self._fix(partial)
+            line = {"text": fixed, "start": round(self._seg_end, 2),
+                    "end": round(float(data.get("audio_seconds") or self._seg_end), 2),
+                    "ts": int((self.base_ts + self._seg_end) * 1000), "final": False}
+            if hits:
+                line.update(orig=partial, fixes=hits)
+            lines.append(line)
+        self.text = "".join(l["text"] for l in lines)
+        return lines
 
 
 class UpstreamError(Exception):
@@ -951,10 +1032,12 @@ async def _open_upstream(on_update, lexicon=None):
 
 @app.websocket("/ws")
 async def transcribe_socket(ws: WebSocket):
-    """?engine=auto|cloud|local；auto 时云端失败会自动降级到本地引擎。"""
+    """?engine=auto|online|offline|local；auto=云端优先，失败自动降级到离线引擎。"""
     await ws.accept()
     mode = (ws.query_params.get("engine") or "auto").lower()
-    if mode not in ("auto", "cloud", "local"):
+    if mode in ("online", "cloud"):
+        mode = "cloud"
+    if mode not in ("auto", "cloud", "offline", "local"):
         mode = "auto"
     if slots.locked() and slots._value == 0:         # noqa: SLF001
         await ws.send_json({"type": "status", "message": f"当前会话已满（上限 {MAX_SESSIONS}），排队等待…"})
@@ -1079,6 +1162,22 @@ async def transcribe_socket(ws: WebSocket):
             await ws.send_json({"type": "status", "engine": "local", "message": reason})
             return opened
 
+        async def start_offline(reason):
+            opened = OfflineSession(emit, session_lexicon)
+            await opened.open(session_lexicon.hotwords())
+            await ws.send_json({"type": "status", "engine": "offline", "message": reason})
+            return opened
+
+        async def start_fallback(reason):
+            """auto 的降级链：离线引擎 → （配了才用）本机 FunASR。"""
+            if OFFLINE_ENGINE_URL:
+                try:
+                    return await start_offline(reason), "offline"
+                except Exception as exc:             # noqa: BLE001
+                    log.warning("离线引擎不可用：%r", exc)
+                    reason = f"{reason}；离线引擎也不可用（{exc}）"
+            return await start_local(reason), "local"
+
         try:
             await read_config()
             if mode in ("auto", "cloud"):
@@ -1090,13 +1189,17 @@ async def transcribe_socket(ws: WebSocket):
                     log.warning("云端不可用：%r", exc)
                     if mode == "cloud":
                         raise
-                    session = await start_local(f"云端识别不可用（{exc}），已切到本地引擎")
-                    engine = "local"
+                    session, engine = await start_fallback(f"云端识别不可用（{exc}），已切到离线引擎")
+            elif mode == "offline":
+                session = await start_offline("使用离线识别引擎（本机模型，不联网）")
+                engine = "offline"
             else:
-                session = await start_local("使用本地识别引擎（离线兜底）")
+                session = await start_local("使用本机 FunASR 引擎")
                 engine = "local"
             await ws.send_json({"type": "status", "engine": engine,
-                                "message": "本地引擎已就绪，开始说话" if engine == "local" else "已就绪，开始说话"})
+                                "message": {"cloud": "已就绪，开始说话",
+                                            "offline": "离线引擎已就绪（本机模型），开始说话",
+                                            "local": "本机引擎已就绪，开始说话"}.get(engine, "已就绪，开始说话")})
             if nonlocal_diarize[0] and tracker is None and DIAR_MODE in ("online", "both"):
                 await ws.send_json({"type": "status", "message": "说话人分离模型不可用（见 tools/fetch_diarization_models.sh）"})
             for chunk in early_audio:                # 比 config 先到的那点音频
@@ -1121,15 +1224,13 @@ async def transcribe_socket(ws: WebSocket):
                                 reason = f"{reason}；重连失败：{exc}"
                                 if mode != "auto":
                                     raise UpstreamError(reason) from exc
-                                session = await start_local("云端重连失败，已切到本地引擎")
-                                engine = "local"
+                                session, engine = await start_fallback("云端重连失败，已切到离线引擎")
                                 cloud_retries = CLOUD_MAX_RETRY
                                 await session.replay(bytes(history))
                         elif mode == "auto":
-                            log.warning("云端会话中断，降级本地：%s", reason)
+                            log.warning("云端会话中断，降级离线：%s", reason)
                             await session.close()
-                            session = await start_local("云端连接中断，已切到本地引擎")
-                            engine = "local"
+                            session, engine = await start_fallback("云端连接中断，已切到离线引擎")
                             await session.replay(bytes(history))
                         else:
                             raise UpstreamError(reason)
@@ -1197,6 +1298,21 @@ async def transcribe_socket(ws: WebSocket):
 
 # ---------------------------------------------------------------- 静态页面
 
+async def offline_status() -> dict:
+    """探一下离线引擎（offline_engine.py）在不在、模型加载好没有。"""
+    if not OFFLINE_ENGINE_URL:
+        return {"ok": False, "reason": "未配置离线引擎地址（DOUBAO_OFFLINE_ENGINE）"}
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            resp = await client.get(f"{OFFLINE_ENGINE_URL}/health")
+            data = resp.json()
+            return {"ok": bool(data.get("ok")), "reason": data.get("reason") or "",
+                    "tokens": data.get("tokens"), "punctuation": data.get("punctuation"),
+                    "url": OFFLINE_ENGINE_URL}
+    except Exception as exc:                         # noqa: BLE001
+        return {"ok": False, "reason": f"连不上（{exc}）", "url": OFFLINE_ENGINE_URL}
+
+
 @app.get("/health")
 async def health():
     creds = CREDS.data
@@ -1206,6 +1322,9 @@ async def health():
         "app_key_ready": bool(creds.get("app_key")),
         "max_sessions": MAX_SESSIONS,
         "aid": AID,
+        "engines": {"cloud": True, "offline": (await offline_status()).get("ok", False),
+                    "local": bool(LOCAL_ENGINE_URL)},
+        "offline_engine": await offline_status(),
         "diarization": {**DIARIZER.status(), "mode": DIAR_MODE,
                         "embedding_dim": embedding_dim(),
                         "gallery_threshold": GALLERY_THRESHOLD},
