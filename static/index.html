@@ -59,13 +59,11 @@
   .hint{color:var(--dim);font-size:12px;margin-top:10px;line-height:1.7}
   /* 滚动时把「录音按钮 + 电平表 + 状态」吸附到顶部，随时能按 */
   #recSentinel{height:1px}
-  #recCard{position:sticky; top:8px; z-index:20;
-           transition:padding .18s ease, box-shadow .18s ease, margin .18s ease}
-  #recCard.stuck{padding:10px 16px; box-shadow:0 8px 24px rgba(20,32,60,.16)}
-  #recCard.stuck .hint{display:none}                 /* 吸住时收起说明文字 */
-  #recCard.stuck .opt{margin-top:8px; font-size:12.5px}
-  #recCard.stuck .bar{padding-bottom:2px}
+  /* 吸附时只是"钉住"，不改变任何尺寸/可见性 —— 否则卡片高度一变，判定条件跟着翻转，就会在临界点反复弹跳 */
+  #recCard{position:sticky; top:8px; z-index:20; transition:box-shadow .18s ease}
+  #recCard.stuck{box-shadow:0 8px 24px rgba(20,32,60,.16)}
   :root[data-theme="dark"] #recCard.stuck{box-shadow:0 8px 24px rgba(0,0,0,.45)}
+  .hintblock{color:var(--dim);font-size:12.5px;line-height:1.75;padding:0 2px}
   .utility{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;
            margin-top:2px;padding:4px 0 2px}
   .doclink{display:inline-block;font-size:13.5px;background:var(--chip);border:1px solid var(--line);
@@ -80,7 +78,8 @@
   .ghlink svg{flex:0 0 auto}
   .tag{display:inline-block;font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:999px;
        padding:2px 10px;margin-right:6px}
-  #output{min-height:240px;max-height:52vh;overflow:auto;padding-right:4px}
+  /* 不设 max-height：让内容把页面撑长，用户滚的是整页，吸顶的录音条一直可见 */
+  #output{min-height:240px;padding-right:4px}
   #output .ph{color:var(--ph);font-size:17px}
   .row{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px dashed var(--dash)}
   .row:last-child{border-bottom:0}
@@ -158,14 +157,14 @@
       <div id="meter"><i></i></div>
       <div class="status"><span id="dot" class="dot"></span><span id="statusText">未开始</span></div>
     </div>
-    <div class="hint">
-      首次使用需授权麦克风；<b>录音不落盘</b>，识别在服务端完成后只把文字存进本机浏览器。<br>
-      已定稿的句子可以<b>点文字直接改</b>（会记住你的改法），行尾 ✕ 可删除单句；只有点「清空」才会删掉历史。
-    </div>
-    <label class="opt" id="diarWrap" title="用本地模型（pyannote 分割 + 3D-Speaker 声纹）区分是谁在说话，结束后多花几秒">
+    <label class="opt" id="diarWrap" title="用本地模型（pyannote 分割 + 3D-Speaker 声纹）区分是谁在说话">
       <input type="checkbox" id="diarChk"> 区分说话人（多人对话时给每句标「谁说的」，点标签可改名）
     </label>
   </section>
+  <div class="hintblock">
+    首次使用需授权麦克风；<b>录音不落盘</b>，识别在服务端完成后只把文字存进本机浏览器。<br>
+    已定稿的句子可以<b>点文字直接改</b>（会记住你的改法），行尾 ✕ 可删除单句；只有点「清空」才会删掉历史。
+  </div>
 
   <section class="card">
     <div class="bar" style="margin-bottom:10px">
@@ -379,6 +378,7 @@ function offsetText(l) {
   return `${l.start.toFixed(1)}–${end.toFixed(1)}s`;
 }
 function storedLines() { return entries.filter((e) => e.type !== 'session'); }
+function nearBottom() { return window.innerHeight + window.scrollY >= document.body.scrollHeight - 160; }
 
 // 清掉「后面没有内容的段落分隔线」（点了开始但没说话），以及连着出现的重复分隔线。
 // 注意：第一段的分隔线是有意义的，不能删。
@@ -487,9 +487,11 @@ function render() {
   });
   live.forEach((l) => frag.appendChild(row(l, true, false)));
 
+  const follow = nearBottom();
   output.innerHTML = '';
   output.appendChild(frag);
-  output.scrollTop = output.scrollHeight;
+  // 只有用户本来就在底部附近才跟着滚；正在往回翻历史时不打断他
+  if (follow) window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
 }
 
 // ---------------------------------------------------------------- 词典（本地）
@@ -645,7 +647,7 @@ function handleMessage(msg) {
       tagLatency.textContent = '首字 ' + ((firstResultAt - startedAt) / 1000).toFixed(1) + 's';
     }
     setStatus(live.some((l) => !l.final) ? '识别中…' : '收到整句', 'on');
-    render();
+    render();                                   // render() 里只在"本来就在底部附近"时才跟随滚动
     return;
   }
   if (msg.type === 'final') {
@@ -849,13 +851,22 @@ fetch('/health').then((r) => r.json()).then((j) => {
   }
 }).catch(() => {});
 
-// 滚动时吸附录音卡片（哨兵离开视口就说明已经吸顶）
-if (window.IntersectionObserver) {
-  const recCard = $('recCard');
-  new IntersectionObserver(([entry]) => {
-    recCard.classList.toggle('stuck', !entry.isIntersecting);
-  }, { threshold: 0 }).observe($('recSentinel'));
-}
+// 滚动时吸附录音卡片。
+// 判定用"哨兵在文档里的固定位置"（不受卡片自身吸顶影响），并加滞回（进入 4px / 退出 24px），
+// 这样在临界点不会来回翻转、也就不会卡住滚不动。
+(function stickyRecorder() {
+  const card = $('recCard'), sentinel = $('recSentinel');
+  let anchor = sentinel.offsetTop, stuck = false;
+
+  function update() {
+    const y = window.scrollY;
+    if (!stuck && y > anchor + 4) { stuck = true; card.classList.add('stuck'); }
+    else if (stuck && y < anchor - 24) { stuck = false; card.classList.remove('stuck'); }
+  }
+  window.addEventListener('scroll', update, { passive: true });
+  window.addEventListener('resize', () => { anchor = sentinel.offsetTop; update(); });
+  update();
+})();
 
 $('undoBtn').onclick = () => {
   if (!store.restoreBackup()) return toast('没有可恢复的备份');
