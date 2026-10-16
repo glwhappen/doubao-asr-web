@@ -31,7 +31,7 @@ import urllib.request
 
 import httpx
 import websockets
-from diarization import DIARIZER, assign_speakers
+from diarization import FILL_GAP_SECONDS, DIARIZER, assign_speakers
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -1117,12 +1117,16 @@ async def transcribe_socket(ws: WebSocket):
                             await session.push(pending, 1 if not sent_first else 9)
                             pending = None
                         lines, error = await session.finish()
+                        received = len(history) / (SAMPLE_RATE * 2)
+                        last_end = max((l.get("end") or 0) for l in lines) if lines else 0
+                        log.info("会话收尾：收到 %.1fs 音频，上游认到 %.1fs（%d 句，跨度差 %.1fs）",
+                                 received, last_end, len(lines), received - last_end)
                         speakers = 0
                         if nonlocal_diarize[0]:
                             if DIARIZER.available():
                                 await ws.send_json({"type": "status", "message": "正在区分说话人（本地模型）…"})
                                 segments = await asyncio.to_thread(DIARIZER.diarize, bytes(history))
-                                speakers = assign_speakers(lines, segments)
+                                speakers = assign_speakers(lines, segments, FILL_GAP_SECONDS)
                                 log.info("说话人分离：%d 段 → %d 人", len(segments), speakers)
                                 if not speakers:
                                     error = error or "没听出多个人（或音频太短），本次未区分说话人"
@@ -1130,7 +1134,11 @@ async def transcribe_socket(ws: WebSocket):
                                 error = error or "未安装说话人分离模型，跳过（见 tools/fetch_diarization_models.sh）"
                         await ws.send_json({"type": "final", "engine": engine, "lines": public(lines),
                                             "text": "\n".join(l["text"] for l in lines if l.get("text")),
-                                            "speakers": speakers, "error": error})
+                                            "speakers": speakers, "error": error,
+                                            # 诊断用：浏览器送来多少秒音频 / 上游认到第几秒。
+                                            # 两者差得多说明「音频到了但没认出来」，不是链路丢包。
+                                            "audio_seconds": round(received, 1),
+                                            "recognized_seconds": round(last_end, 1)})
                         break
                     if command.get("type") == "cancel":
                         break

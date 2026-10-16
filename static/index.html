@@ -251,10 +251,13 @@ function speakerLabel(spk) {
 }
 
 let lex = store.lexicon();
-let entries = store.entries();     // 已定稿的行 + 段落分隔（持久）
+let entries = compact(store.entries());     // 已定稿的行 + 段落分隔（持久）
 let live = [];                     // 当前会话的实时行（服务端每次给全量）
 let ws = null, audioCtx = null, node = null, stream = null, source = null, gain = null;
 let recording = false, startedAt = 0, firstResultAt = 0, keySeq = 0;
+let pendingSessionTs = null;      // 本次录音的开始时间：等真有句子了再写分隔线
+let pcmQueue = [];                // WS 尚未连上时暂存的 PCM（否则录音开头会被丢掉）
+let lastSessionMarker = null;     // 收尾时把「录音秒数 / 识别秒数」回填到分隔线
 
 // ---------------------------------------------------------------- 小工具
 
@@ -282,10 +285,27 @@ function offsetText(l) {
   return `${l.start.toFixed(1)}–${end.toFixed(1)}s`;
 }
 function storedLines() { return entries.filter((e) => e.type !== 'session'); }
+
+// 清掉「后面没有内容的段落分隔线」（点了开始但没说话），以及连着出现的重复分隔线。
+// 注意：第一段的分隔线是有意义的，不能删。
+function compact(list) {
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const e = list[i];
+    if (e.type !== 'session') { out.push(e); continue; }
+    let hasLine = false;                      // 这段后面（下一个分隔线之前）有没有内容
+    for (let j = i + 1; j < list.length && list[j].type !== 'session'; j++) { hasLine = true; break; }
+    if (!hasLine) continue;                   // 空段落整段丢掉
+    const prev = out[out.length - 1];
+    if (prev && prev.type === 'session') continue;   // 连续的分隔线只留第一个
+    out.push(e);
+  }
+  return out;
+}
 function allLines() {
   return storedLines().concat(live.map((l) => Object.assign({}, l, { final: true })));
 }
-function persist() { entries = store.saveEntries(entries); }
+function persist() { entries = store.saveEntries(compact(entries)); }
 
 // ---------------------------------------------------------------- 渲染
 
@@ -347,7 +367,13 @@ function render() {
     if (e.type === 'session') {
       const sep = document.createElement('div');
       sep.className = 'sep';
-      sep.textContent = e.label || dayTime(e.ts);
+      let label = e.label || dayTime(e.ts);
+      if (e.audio) {
+        const gap = Math.max(0, (e.audio || 0) - (e.speech || 0));
+        label += ` · 录音 ${e.audio.toFixed(0)}s / 识别到 ${(e.speech || 0).toFixed(0)}s`;
+        if (gap >= 5) label += `（${gap.toFixed(0)}s 没听出内容：可能是停顿，也可能是识别没跟上）`;
+      }
+      sep.textContent = label;
       frag.appendChild(sep);
     } else {
       frag.appendChild(row(e, false, true));      // 除段落分隔外都是文本行
@@ -468,19 +494,38 @@ function handleMessage(msg) {
   if (msg.type === 'final') {
     const lines = (msg.lines || []).map((l) => Object.assign({ type: 'line' }, l,
       { key: `k${Date.now()}-${++keySeq}` }));
+    if (lines.length && pendingSessionTs) {
+      const marker = { type: 'session', ts: pendingSessionTs, label: dayTime(pendingSessionTs) };
+      entries = entries.concat([marker]);
+      lastSessionMarker = marker;                // 收尾时回填音频时长
+      pendingSessionTs = null;
+    }
     entries = entries.concat(lines);
     persist();
     live = [];
     render();
-    setStatus(msg.error ? msg.error : '完成', msg.error ? 'err' : '');
+    if (lastSessionMarker && msg.audio_seconds) {
+      lastSessionMarker.audio = msg.audio_seconds;
+      lastSessionMarker.speech = msg.recognized_seconds;
+      lastSessionMarker = null;
+      persist();
+      render();
+    }
+    const who = msg.speakers ? ` · 分出 ${msg.speakers} 位说话人` : '';
+    setStatus(msg.error ? msg.error : `完成${who}`, msg.error ? 'err' : '');
     tagLatency.textContent = '用时 ' + ((performance.now() - startedAt) / 1000).toFixed(1) + 's';
   }
 }
 
+function flushQueue() {
+  if (!ws || ws.readyState !== 1 || !pcmQueue.length) return;
+  for (const chunk of pcmQueue) ws.send(chunk);
+  pcmQueue = [];
+}
+
 async function start() {
-  live = []; firstResultAt = 0;
-  entries = entries.concat([{ type: 'session', ts: Date.now(), label: `${dayTime(Date.now())}` }]);
-  persist();
+  live = []; firstResultAt = 0; pcmQueue = [];
+  pendingSessionTs = Date.now();     // 先记着，等识别出内容再落分隔线（空录音不留痕）
   render();
   setStatus('请求麦克风…', 'busy');
 
@@ -501,6 +546,7 @@ async function start() {
   ws.onopen = () => {
     // 会话开始先把本机词库发给服务端（只在这次会话里用，服务端不保存）
     ws.send(JSON.stringify({ type: 'config', lexicon: lex, diarize: $('diarChk').checked }));
+    flushQueue();                                 // 把连上之前攒下的音频补发出去
     setStatus('已连接，请说话', 'on');
   };
   ws.onmessage = (ev) => { try { handleMessage(JSON.parse(ev.data)); } catch (_) {} };
@@ -512,7 +558,12 @@ async function start() {
       meter.style.width = Math.min(100, Math.round(ev.data.peak * 130)) + '%';
       return;
     }
-    if (ws && ws.readyState === 1) ws.send(ev.data.pcm);
+    if (ws && ws.readyState === 1) {
+      flushQueue();
+      ws.send(ev.data.pcm);
+    } else if (pcmQueue.length < 150) {          // 最长约 30 秒，够等到连上
+      pcmQueue.push(ev.data.pcm);                // 还没连上：先存着，onopen 后补发
+    }
   };
 
   try { localStorage.setItem(LS_DIARIZE, $('diarChk').checked ? '1' : '0'); } catch (_) {}
@@ -629,6 +680,7 @@ $('lexClear').onclick = () => {
   toast('词库已清空');
 };
 
+persist();                                  // 顺手把历史里的空段落清掉
 $('diarChk').checked = (localStorage.getItem(LS_DIARIZE) || '0') === '1';
 $('diarChk').onchange = () => {
   try { localStorage.setItem(LS_DIARIZE, $('diarChk').checked ? '1' : '0'); } catch (_) {}

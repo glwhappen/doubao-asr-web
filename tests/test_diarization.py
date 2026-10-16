@@ -31,7 +31,14 @@ class AssignSpeakersCase(unittest.TestCase):
         diarization.assign_speakers(lines, segments)
         self.assertEqual(lines[0]["spk"], 2)
 
-    def test_no_overlap_leaves_line_untouched(self):
+    def test_nearby_gap_gets_nearest_speaker(self):
+        """和分离片段没有重叠、但时间挨着 → 用最近的说话人补上（避免一段里有的有标签有的没有）。"""
+        lines = [{"text": "漏检的短句", "start": 5.5, "end": 6.0}]
+        diarization.assign_speakers(lines, [diarization.Segment(0.0, 5.0, 1)])
+        self.assertEqual(lines[0]["spk"], 1)
+
+    def test_far_gap_leaves_line_untouched(self):
+        """离所有片段都太远（>10s）就不猜，保持没有标签。"""
         lines = [{"text": "孤句", "start": 20.0, "end": 21.0}]
         diarization.assign_speakers(lines, [diarization.Segment(0.0, 5.0, 1)])
         self.assertNotIn("spk", lines[0])

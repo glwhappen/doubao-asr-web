@@ -33,6 +33,8 @@ CLUSTER_THRESHOLD = float(os.environ.get("DOUBAO_DIAR_THRESHOLD", "0.7"))
 MIN_DURATION_ON = float(os.environ.get("DOUBAO_DIAR_MIN_ON", "0.3"))
 MIN_DURATION_OFF = float(os.environ.get("DOUBAO_DIAR_MIN_OFF", "0.5"))
 MAX_SECONDS = float(os.environ.get("DOUBAO_DIAR_MAX_SECONDS", "600"))  # 超过就跳过，防卡死
+# 这一句和所有分离片段都无重叠时，允许用「最近的说话人」补标签的最大时间距离（秒）
+FILL_GAP_SECONDS = float(os.environ.get("DOUBAO_DIAR_FILL_GAP", "10"))
 MIN_SPEAKER_SECONDS = float(os.environ.get("DOUBAO_DIAR_MIN_SPEAKER_SECONDS", "1.0"))  # 短于此的簇会被并掉
 
 
@@ -169,26 +171,39 @@ DIARIZER = Diarizer()
 
 # ---------------------------------------------------------------- 结果对齐
 
-def assign_speakers(lines: list[dict], segments: list[Segment]) -> int:
-    """把分离结果按“时间重叠最多”贴到每一句上；返回识别出的人数。
+def assign_speakers(lines: list[dict], segments: list[Segment], fill_gap: float = 10.0) -> int:
+    """把分离结果贴到每一句上；返回识别出的人数。
 
-    lines 里每项要有 start/end（秒）。没有重叠时保持原样（不硬塞一个说话人）。
+    规则：优先按“时间重叠最多”判断；这一句完全没和任何分离片段重叠时（模型漏检、
+    或那句很短），就取**时间最近**的说话人补上——否则会出现同一段录音里
+    “有的句子有标签、有的没有”，看起来像坏了。距离超过 fill_gap 秒才不贴。
     """
     if not segments:
         return 0
     for line in lines:
         start = line.get("start")
-        end = line.get("end")
         if start is None:
             continue
-        end = start if end is None else end
+        end = start if line.get("end") is None else line["end"]
+
         best, best_overlap = None, 0.0
         for seg in segments:
             overlap = min(end, seg.end) - max(start, seg.start)
             if overlap > best_overlap:
                 best, best_overlap = seg.speaker, overlap
-        if best is not None and best_overlap > 0:
+        if best is not None:                       # 有重叠，直接用
             line["spk"] = best
+            continue
+
+        # 没有重叠 → 找时间上最近的那一段
+        nearest, nearest_gap = None, None
+        for seg in segments:
+            gap = seg.start - end if seg.start > end else start - seg.end
+            gap = max(0.0, gap)
+            if nearest_gap is None or gap < nearest_gap:
+                nearest, nearest_gap = seg.speaker, gap
+        if nearest is not None and nearest_gap is not None and nearest_gap <= fill_gap:
+            line["spk"] = nearest
     return max((s.speaker for s in segments), default=0)
 
 
