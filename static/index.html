@@ -57,7 +57,8 @@
   #meter{height:6px;border-radius:3px;background:var(--meter);overflow:hidden;flex:1;min-width:110px}
   #meter i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--ok),var(--accent));transition:width .08s}
   .hint{color:var(--dim);font-size:12px;margin-top:10px;line-height:1.7}
-  .headrow{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:10px}
+  .utility{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;
+           margin-top:2px;padding:4px 0 2px}
   .doclink{display:inline-block;font-size:13.5px;background:var(--chip);border:1px solid var(--line);
            border-radius:999px;padding:5px 14px;transition:.15s;color:var(--accent)}
   .doclink:hover{background:var(--btn-hover);border-color:var(--accent)}
@@ -125,11 +126,6 @@
 <header>
   <h1>🎙️ 豆包输入法语音转文字</h1>
   <p>点一下开始说话，再说一遍点停止；内容只存在你这台浏览器里，别人看不到、也不会互相覆盖</p>
-  <p class="headrow">
-    <a class="doclink" href="/how" target="_blank" rel="noopener">📖 原理与复刻指南（下载地址 / 协议 / Python·Node·Go 示例 / 离线方案）</a>
-    <button id="themeToggle" data-theme-toggle></button>
-    <a class="ghlink" href="__GITHUB_URL__" target="_blank" rel="noopener" title="在 GitHub 上查看源码"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span>GitHub</span></a>
-  </p>
 </header>
 
 <main>
@@ -179,12 +175,18 @@
       </div>
     </details>
   </section>
+
+  <div class="utility">
+    <a class="doclink" href="/how" target="_blank" rel="noopener">📖 原理与复刻指南（下载地址 / 协议 / Python·Node·Go 示例 / 离线方案）</a>
+    <button id="themeToggle" data-theme-toggle></button>
+    <a class="ghlink" href="__GITHUB_URL__" target="_blank" rel="noopener" title="在 GitHub 上查看源码"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span>GitHub</span></a>
+  </div>
 </main>
 
 <footer>
   仅供技术研究与自用演示 · 识别能力来自豆包输入法内部的语音服务，非官方开放 API，上游可能随时变更或限流。<br>
-  你的语音转写与自定义词库都保存在本机浏览器（localStorage），不会上传到本服务；换浏览器/换设备就是另一份数据。<br>
-  <a class="ghlink" href="__GITHUB_URL__" target="_blank" rel="noopener" style="margin-top:10px"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span>GitHub · 源码与原理文档</span></a>
+  你的语音转写与自定义词库都保存在本机浏览器（localStorage），不会上传到本服务；换浏览器/换设备就是另一份数据。
+  <span style="display:none"><a class="ghlink" href="__GITHUB_URL__" target="_blank" rel="noopener"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg><span>GitHub · 源码与原理文档</span></a></span>
 </footer>
 <div class="toast" id="toast"></div>
 
