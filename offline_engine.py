@@ -56,11 +56,20 @@ HOST = os.environ.get("DOUBAO_OFFLINE_ASR_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DOUBAO_OFFLINE_ASR_PORT", "4272"))
 TOKEN = os.environ.get("DOUBAO_OFFLINE_ASR_TOKEN", "")
 
-MIN_SPEECH_SEC = 0.30        # 短于这个的语音片段直接丢（咳嗽/碰麦）
-SILENCE_HANGOVER_SEC = 0.60  # 停顿这么久就断句
-MAX_SEGMENT_SEC = 12.0       # 单段上限，避免长段解码太慢
+MIN_SPEECH_SEC = 0.25        # 片段内至少这么多语音，否则当噪声丢
+MIN_DECODE_SEC = 1.20        # 短于这个的片段不急着定稿（等下一句并进来），因为模型在短音频上会输出乱码
+SILENCE_HANGOVER_SEC = 1.00  # 停顿超过它才“考虑”断句
+MERGE_GAP_SEC = 1.50         # 再宽限这么久：期间又说话就并回同一句；到期无条件定稿
+QUALITY_OK = 0.35            # 考虑断句时先解码看一眼：质量分≥它才真的断（防碎片乱码；实测乱码 0.00~0.29，完整句 0.44~0.72）
+DECIDE_MIN_INTERVAL_SEC = 1.0  # 这种“试解码”最少隔多久做一次，省 CPU
+MAX_SEGMENT_SEC = 15.0       # 单段上限，避免长段解码太慢
+PAD_SEC = 0.15               # 解码前后各补一点静音，保全边界音节
+SILENCE_KEEP_SEC = 0.18      # 段内长静音压到这么长（模型对长段静音会重复吐字）
+SILENCE_CUT_SEC = 0.30       # 超过它才算“长静音”，需要压缩
+SENTENCE_END = "。！？!?…"    # 解码后按这些标点拆成一行一句
 PARTIAL_INTERVAL_SEC = 1.20  # 未定稿结果的刷新间隔
 PARTIAL_MAX_SEC = 8.0        # 超过这个长度不再做未定稿解码（省 CPU）
+PARTIAL_MIN_SEC = 2.00       # 短于这个不做未定稿（短音频解码就是乱码，会在页面上闪垃圾字）
 
 
 # ------------------------------------------------------------------ 前端特征
@@ -232,31 +241,48 @@ class AsrPipeline:
 
 # ------------------------------------------------------------------ 流式会话
 class StreamSession:
-    """一块一块收 PCM，做能量 VAD 切句，边收边出「未定稿」，停顿后出「已定稿」。"""
+    """一块一块收 PCM，做能量 VAD 切句，边收边出「未定稿」，停顿后出「已定稿」。
+
+    切句是这套引擎最容出问题的地方：模型在 **1~2 秒的碎片上会输出乱码**
+    （实测：完整句质量分 0.44~0.72、碎片乱码 0.001~0.29），所以策略是“宁可晚一点合，也不要把话切碎”：
+      · 停顿 1.0s 只是“考虑断句”：先把当前缓冲解码看一眼，**质量分≥ 0.35 才真的断**；
+      · 不够好就继续合，最长再等 1.5s，到期无条件定稿（不会无限拖）；
+      · 短于 1.2s 的片段根本不去试断（模型一定会乱码），除非会话结束或段太长。
+    """
 
     def __init__(self, pipeline: AsrPipeline, hotwords: list[str] | None = None):
         self.pipeline = pipeline
         self.hotwords = hotwords or []
-        self.frames: list[np.ndarray] = []           # 当前语音片段（含尾部停顿）
+        self.frames: list[np.ndarray] = []           # 当前片段（含尾部停顿）
         self.segments: list[Segment] = []            # 已定稿
         self.samples_total = 0
         self.seg_start_sample = 0
         self.silence_frames = 0
+        self.speech_frames = 0
         self._pending = np.zeros(0, dtype=np.float32)
+        self._recent: list[float] = []               # 最近几帧 RMS，做平滑
         self._noise = 0.004                          # 底噪 RMS（自适应）
         self._last_partial_at = 0.0
+        self._last_decide_at = 0.0                   # 上次“试解码决定要不要断句”
         self.partial = ""
         self.created = time.time()
 
     # ---- VAD ----
     def _is_speech(self, rms: float) -> bool:
-        return rms > max(0.006, 2.2 * self._noise)
+        return rms > max(0.0035, 1.8 * self._noise)
 
     def _adapt_noise(self, rms: float, is_speech: bool):
         if not is_speech:
             self._noise = 0.98 * self._noise + 0.02 * rms
         else:
             self._noise = 0.999 * self._noise + 0.001 * rms
+
+    def _smooth(self, rms: float) -> float:
+        """3 帧滑动平均：单帧的能量坑（爆破音/咝音）不断句。"""
+        self._recent.append(rms)
+        if len(self._recent) > 3:
+            self._recent.pop(0)
+        return float(sum(self._recent) / len(self._recent))
 
     async def feed(self, pcm_bytes: bytes) -> dict:
         """吃一块 PCM16，返回当前累计文本/定稿句子/未定稿片段。"""
@@ -268,7 +294,7 @@ class StreamSession:
         closed: list[Segment] = []
         for i in range(n_frames):
             frame = data[i * FRAME_SAMPLES:(i + 1) * FRAME_SAMPLES]
-            rms = float(np.sqrt(np.mean(frame ** 2)) + 1e-12)
+            rms = self._smooth(float(np.sqrt(np.mean(frame ** 2)) + 1e-12))
             speech = self._is_speech(rms)
             self._adapt_noise(rms, speech)
             self.samples_total += FRAME_SAMPLES
@@ -276,23 +302,32 @@ class StreamSession:
                 if not self.frames:
                     self.seg_start_sample = self.samples_total - FRAME_SAMPLES
                 self.frames.append(frame)
+                self.speech_frames += 1
                 self.silence_frames = 0
             elif self.frames:
-                self.frames.append(frame)            # 停顿也先留着，断不断由下面判断
+                self.frames.append(frame)            # 停顿时先留着
                 self.silence_frames += 1
-                if self.silence_frames * FRAME_MS / 1000 >= SILENCE_HANGOVER_SEC:
-                    seg = await self._close_segment()
+                pause = self.silence_frames * FRAME_MS / 1000
+                speech_sec = self.speech_frames * FRAME_MS / 1000
+                forced = pause >= SILENCE_HANGOVER_SEC + MERGE_GAP_SEC
+                decide = (not forced and pause >= SILENCE_HANGOVER_SEC
+                          and speech_sec >= MIN_DECODE_SEC
+                          and time.time() - self._last_decide_at >= DECIDE_MIN_INTERVAL_SEC)
+                if decide:
+                    self._last_decide_at = time.time()
+                if forced or decide:
+                    seg = await self._maybe_close(force=forced)
                     if seg:
                         closed.append(seg)
             if self.frames and len(self.frames) * FRAME_MS / 1000 >= MAX_SEGMENT_SEC:
-                seg = await self._close_segment()
+                seg = await self._maybe_close(force=True)
                 if seg:
                     closed.append(seg)
         # 未定稿：说话中每隔一段时间用当前缓冲重解一次
         if self.frames and not closed:
             dur = len(self.frames) * FRAME_MS / 1000
             now = time.time()
-            if (dur <= PARTIAL_MAX_SEC and dur >= 0.8
+            if (PARTIAL_MIN_SEC <= dur <= PARTIAL_MAX_SEC
                     and now - self._last_partial_at >= PARTIAL_INTERVAL_SEC and not self.partial):
                 self._last_partial_at = now
                 audio = np.concatenate(self.frames)
@@ -300,25 +335,108 @@ class StreamSession:
                 self.partial = text
         return self.snapshot(closed)
 
-    async def _close_segment(self) -> Segment | None:
+    def _peek(self):
         audio = np.concatenate(self.frames) if self.frames else np.zeros(0, dtype=np.float32)
         start = self.seg_start_sample / SAMPLE_RATE
-        end = self.samples_total / SAMPLE_RATE
+        dur = len(self.frames) * FRAME_MS / 1000
+        speech_sec = self.speech_frames * FRAME_MS / 1000
+        return audio, start, dur, speech_sec
+
+    def _clear(self):
         self.frames = []
         self.silence_frames = 0
+        self.speech_frames = 0
         self.partial = ""
-        speech_sec = (end - start) - SILENCE_HANGOVER_SEC
-        if speech_sec < MIN_SPEECH_SEC or audio.size < SAMPLE_RATE * MIN_SPEECH_SEC:
+
+    def _prepare(self, audio: np.ndarray, dur: float) -> np.ndarray:
+        """解码前的音频整理：尾巴停顿留一点、段内长静音压短、两头补静音。
+
+        为什么要压段内静音：把一句话中间的停顿合进同一段后，模型看到几秒的纯静音会**重复吐字**
+        （实测「微信的。微信语音接口测试」这类重复），压到 0.18s 后就干净了。
+        """
+        tail = min(self.silence_frames * FRAME_MS / 1000, SILENCE_HANGOVER_SEC)
+        keep = int((dur - tail) * SAMPLE_RATE)
+        if 0 < keep < audio.size:
+            audio = audio[:keep]
+        audio = self._compress_silence(audio)
+        pad = np.zeros(int(PAD_SEC * SAMPLE_RATE), dtype=np.float32)
+        return np.concatenate([pad, audio, pad])
+
+    def _compress_silence(self, audio: np.ndarray) -> np.ndarray:
+        """把段内的长静音压到 SILENCE_KEEP_SEC（只动解码用的副本，不动时间戳）。"""
+        n = len(audio) // FRAME_SAMPLES
+        if n < 2:
+            return audio
+        frames = audio[:n * FRAME_SAMPLES].reshape(n, FRAME_SAMPLES)
+        rms = np.sqrt((frames ** 2).mean(axis=1) + 1e-12)
+        quiet = rms < max(0.0035, 1.8 * self._noise)
+        keep_frames = int(SILENCE_KEEP_SEC * SAMPLE_RATE / FRAME_SAMPLES)
+        cut_frames = int(SILENCE_CUT_SEC * SAMPLE_RATE / FRAME_SAMPLES)
+        out, run = [], 0
+        for i in range(n):
+            if quiet[i]:
+                run += 1
+                if run <= keep_frames or run < cut_frames:
+                    out.append(i)
+                elif run == cut_frames:                    # 刚跨过阈值：把这段的开始重新保留
+                    out.extend(range(i - run + 1, i - run + 1 + keep_frames))
+            else:
+                run = 0
+                out.append(i)
+        if len(out) == n:
+            return audio
+        keep_idx = np.array(sorted(set(out)), dtype=int)
+        return frames[keep_idx].reshape(-1).astype(np.float32)
+
+    def _split_sentences(self, text: str, start: float, end: float) -> list[tuple[float, float, str]]:
+        """把一段的文本按句末标点拆成多行，时间按字数比例分（一行一句更可读）。"""
+        parts, buf = [], ""
+        for ch in text:
+            buf += ch
+            if ch in SENTENCE_END:
+                parts.append(buf)
+                buf = ""
+        if buf.strip():
+            parts.append(buf)
+        if len(parts) <= 1:
+            return [(start, end, text)]
+        total = sum(len(p) for p in parts) or 1
+        out, t = [], start
+        for p in parts:
+            dur = (end - start) * len(p) / total
+            out.append((round(t, 2), round(t + dur, 2), p))
+            t += dur
+        return out
+
+    async def _maybe_close(self, force: bool) -> Segment | None:
+        """试断句：force=True 无条件定稿；否则先解码看质量分，不够好就继续合并。"""
+        if not self.frames:
             return None
-        text, quality = await self.pipeline.transcribe(audio)
+        audio, start, dur, speech_sec = self._peek()
+        if speech_sec < MIN_SPEECH_SEC:
+            if force:
+                self._clear()                        # 纯噪声，丢掉
+            return None
+        text, quality = await self.pipeline.transcribe(self._prepare(audio, dur))
         if not text:
+            if force:
+                self._clear()
             return None
+        if not force and quality < QUALITY_OK:
+            log.info("试着断句但质量不够（%.2fs，质量 %.3f）→ 继续合并：%s", speech_sec, quality, text)
+            return None
+        end = start + dur
+        self._clear()
         for word, repl in ((h.split("=>")[0], h.split("=>")[1]) for h in self.hotwords if "=>" in h):
             text = text.replace(word, repl)          # 热词：模型本身不吃 context，用同义替换兜一层
-        seg = Segment(start=round(start, 2), end=round(end, 2), text=text, quality=quality)
-        self.segments.append(seg)
-        log.info("定稿 %.2f-%.2fs（%d 字，质量 %.3f）: %s", seg.start, seg.end, len(text), quality, text)
-        return seg
+        emitted = None
+        for s, e, part in self._split_sentences(text, start, end):
+            seg = Segment(start=s, end=e, text=part, quality=quality)
+            self.segments.append(seg)
+            emitted = emitted or seg
+        log.info("定稿 %.2f-%.2fs（%.1fs 语音，%d 字，质量 %.3f）: %s",
+                 start, end, speech_sec, len(text), quality, text)
+        return emitted
 
     def snapshot(self, closed: list[Segment]) -> dict:
         final_text = "".join(s.text for s in self.segments)
@@ -334,7 +452,7 @@ class StreamSession:
     async def finish(self) -> dict:
         closed = []
         if self.frames:
-            seg = await self._close_segment()
+            seg = await self._maybe_close(force=True)
             if seg:
                 closed.append(seg)
         return self.snapshot(closed)

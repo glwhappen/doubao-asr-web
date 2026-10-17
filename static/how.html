@@ -1647,16 +1647,31 @@ POST /stream               → {"session_id": …}
 POST /stream/{sid}/chunk   → {"sentences":[{start,end,text,quality}], "partial":"…", "audio_seconds": …}
 POST /stream/{sid}/finish  → 全部句子
 GET  /health               → 是否就绪 / token 数 / 是否带标点 / VAD 参数</code></pre>
-  <h4>切句与“未定稿”（体验的关键）</h4>
+  <h4>切句与“未定稿”（体验的关键，也是踩过坑的地方）</h4>
+  <div class="note bad"><b>踩过的坑：把人话切碎了 → 输出全是乱码。</b>
+    最初是“停顿 0.6s 就断句”，上线的真人使用反馈是
+    <code>炸很炸还炸</code>（质量分 0.001）、<code>我的是</code>（0.001）、<code>这是还是一个</code>（0.000）——
+    完整句的质量分是 0.44~0.72，碎片几乎为 0。复现结论：
+    <b>这个模型在 1~2 秒的碎片上会输出乱码</b>（把测试音频硬切成 1.2s 碎片，立刻复现同样的质量分与乱码）。
+    于是改成“宁可晚一点合，也不要把话切碎”，并用**模型自己的质量分**当断句闸门。
+  </div>
   <table>
     <tr><th>参数</th><th>值</th><th>为什么这么定</th></tr>
-    <tr><td>断句停顿</td><td>0.6s</td><td>太短会把逗号当句号，太长一句话半分钟不出</td></tr>
-    <tr><td>单段上限</td><td>12s</td><td>解码整段跑，太长则慢、实时性差</td></tr>
-    <tr><td>最短语音</td><td>0.3s</td><td>丢掉咳嗽、碰麦的碎片</td></tr>
-    <tr><td>未定稿间隔</td><td>约 1.2s</td><td>说话中就上屏；缓冲超过 8s 不再出未定稿，省 CPU</td></tr>
-    <tr><td>底噪估计</td><td>自适应</td><td>静音帧 EMA 更新、语音帧几乎不动；阈值 = max(0.006, 2.2 × 底噪)</td></tr>
+    <tr><td>停顿（考虑断句）</td><td>1.0s</td><td>短于它的停顿一定是句内停顿，绝不切</td></tr>
+    <tr><td>合并宽限</td><td>再等 1.5s</td><td>停顿够久但质量分不够 → 继续合并；到期才无条件定稿</td></tr>
+    <tr><td><b>质量闸门</b></td><td>0.35</td><td>考虑断句时先解码看一眼：质量分≥ 0.35 才真断（碎片乱码实测 0.001~0.29，完整句 0.44~0.72）</td></tr>
+    <tr><td>最短解码片段</td><td>1.2s</td><td>比这更短的片段根本不去试断句（模型必然乱码）</td></tr>
+    <tr><td>段内长静音</td><td>压到 0.18s</td><td>合并后段内还有几秒静音时，模型会<b>重复吐字</b>（如「接口接口测试」），压短后就干净</td></tr>
+    <tr><td>单段上限</td><td>15s</td><td>解码整段跑，太长则慢、实时性差</td></tr>
+    <tr><td>解码后拆行</td><td>按 。！？ 拆</td><td>合并出来的长段按标点拆成一行一句，时间按字数比例分</td></tr>
+    <tr><td>未定稿</td><td>≥2.0s 才出，约 1.2s 一次</td><td>太短的未定稿就是乱码，会在页面上闪垃圾字；缓冲 >8s 就不再出</td></tr>
+    <tr><td>底噪估计</td><td>自适应</td><td>3 帧滑动平均 + 静音帧 EMA；阈值 = max(0.0035, 1.8 × 底噪)</td></tr>
     <tr><td>并发</td><td>推理串行</td><td>CPU 上并发跑只会互相拖慢，加锁排队</td></tr>
   </table>
+  <div class="note"><b>顺带修的一处：关掉浏览器的麦克风前处理。</b>
+    <code>getUserMedia</code> 默认开 <code>noiseSuppression / autoGainControl / echoCancellation</code>，
+    这些对通话友好、对 ASR 有害（降噪会吞辅音、引入音乐噪声），小模型会因此重复吐字。
+    本项目已改成关闭（个别浏览器不支持时退回默认）。</div>
   <h4>实测效果（同一段音频跑两档）</h4>
   <table>
     <tr><th>音频</th><th>在线 CER</th><th>离线 CER</th><th>差别在哪</th></tr>
@@ -1752,6 +1767,11 @@ pip install sherpa-onnx
 python -m sherpa_onnx.offline_recognizer --tokens tokens.txt --paraformer model.onnx audio.wav</code></pre>
 
   <h2 class="sec" id="faq">7. 常见问题</h2>
+  <h4>Q：离线档认出来的字不对/在重复，怎么办？</h4>
+  <p>先看句子后面有没有黄色小问号（<b>低置信</b>标记）——那说明这句的质量分低于 0.35。
+  离线模型对输入比云端敏感，常见原因：说话太快或停顿很多（会被合并/切分）、环境噪声大、麦克风增益过低。
+  自检顺序：① 用 <code>./offline_engine.py --selftest tests/fixture-6s.wav</code> 确认引擎本身正常；
+  ② 看 <code>/var/log/doubao-offline-asr.log</code> 里每句的质量分；③ 换成「在线」档对比，判断是音频问题还是模型问题。</p>
   <h4>Q：为什么我自己连不上，一直 50700000？</h4>
   <p>上游随机抖动（实测约 1/5），重试整段即可。如果重试也一直失败，可能是接口变了或被风控，换新设备试试、或改用本地引擎。</p>
   <h4>Q：直接用 <code>whisper-1</code> 模型名行不行？</h4>

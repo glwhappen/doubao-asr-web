@@ -105,6 +105,89 @@ class TestVadParams(unittest.TestCase):
         self.assertFalse(session._is_speech(0.0001))
 
 
+class _StubPipeline:
+    """不加载模型，只回固定结果：用来单测切句状态机（CI 也能跑）。"""
+
+    available = True
+    reason = "stub"
+
+    def __init__(self, quality=0.9, text="模拟文本。"):
+        self.quality = quality
+        self.text = text
+        self.calls = 0
+
+    async def transcribe(self, pcm, punctuate=True):
+        self.calls += 1
+        return self.text, self.quality
+
+
+def _pcm(pattern, sr=16000, amp=0.08):
+    """pattern: [(语音秒, 静音秒), ...] → PCM16 bytes（语音用固定种子噪声，能量稳定）。"""
+    rng = np.random.default_rng(1)
+    out = []
+    for speech, silence in pattern:
+        out.append((rng.normal(0, amp, int(speech * sr))).astype(np.float32))
+        out.append(np.zeros(int(silence * sr), dtype=np.float32))
+    x = np.clip(np.concatenate(out), -1, 1)
+    return (x * 32768).astype(np.int16).tobytes()
+
+
+def _run(pattern, quality=0.9):
+    pipeline = _StubPipeline(quality=quality)
+    session = oe.StreamSession(pipeline)
+    pcm = _pcm(pattern)
+    for i in range(0, len(pcm), 3200):
+        asyncio.run(session.feed(pcm[i:i + 3200]))
+    result = asyncio.run(session.finish())
+    return session, pipeline, result
+
+
+class TestVadMerging(unittest.TestCase):
+    """切句回归：模型在 1~2 秒碎片上会输出乱码（用户真实报障），所以短停顿不许切、短片段不许单独定稿。"""
+
+    def test_short_pauses_do_not_split(self):
+        # 1.5s 语音 + 0.5s 停顿 ×3：短停顿不该把一句话切成三段，应合成一句
+        session, _, result = _run([(1.5, 0.5)] * 3)
+        self.assertEqual(len(session.segments), 1, "短停顿把句子切碎了")
+        self.assertGreater(result["sentences"][-1]["end"] / 1000, 5.0)
+
+    def test_tiny_fragments_merge(self):
+        # 1.0s 语音 + 0.6s 停顿 ×4：每段都短于 MIN_DECODE_SEC，必须合并
+        session, pipeline, result = _run([(1.0, 0.6)] * 4)
+        self.assertEqual(len(session.segments), 1, "短片段被单独定稿了")
+
+    def test_long_pause_splits(self):
+        # 2s 语音 + 2.5s 停顿 ×2：这是真的说完了，应该分成两句
+        session, _, result = _run([(2.0, 2.5), (2.0, 2.5)])
+        self.assertEqual(len(session.segments), 2)
+        self.assertGreater(result["sentences"][1]["start"], result["sentences"][0]["end"] - 0.01)
+
+    def test_low_quality_defers_close(self):
+        # 质量分很低时，1.0s 停顿只“试”不解——必须等到强制断句（1.0+1.5s）才定稿
+        session, pipeline, _ = _run([(2.0, 1.2), (2.0, 3.0)], quality=0.05)
+        self.assertGreaterEqual(pipeline.calls, 2)          # 至少试过一次 + 最终定稿
+        self.assertEqual(len(session.segments), 1)          # 低质量不切碎：合成一句
+
+    def test_silence_compression(self):
+        # 段内 2s 长静音应被压到 SILENCE_KEEP_SEC 以内（否则模型会重复吐字）
+        session, _, _ = _run([(1.0, 2.0), (1.0, 0.2)])
+        audio = np.concatenate([
+            np.random.default_rng(2).normal(0, 0.08, 16000).astype(np.float32),
+            np.zeros(16000 * 2, dtype=np.float32),
+            np.random.default_rng(3).normal(0, 0.08, 16000).astype(np.float32),
+        ])
+        compressed = session._compress_silence(audio)
+        self.assertLess(len(compressed), len(audio) - 16000, "长静音没被压缩")
+
+    def test_sentence_split_by_punctuation(self):
+        session, _, _ = _run([(2.0, 2.5)])
+        parts = session._split_sentences("第一句话。第二句话长一些。", 0.0, 10.0)
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(parts[0][2], "第一句话。")
+        self.assertTrue(parts[0][0] == 0.0 and abs(parts[1][1] - 10.0) < 0.01)
+        self.assertLess(parts[0][1], parts[1][0] + 0.01)
+
+
 @unittest.skipUnless(HAVE_ORT and HAVE_MODELS, SKIP_REASON)
 class TestOfflineTranscribe(unittest.TestCase):
     """真模型推理：拿仓库里的 fixture 音频对答案。"""

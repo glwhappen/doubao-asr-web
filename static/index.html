@@ -50,6 +50,9 @@
   #toggle{min-width:150px;font-weight:600;background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
   #toggle.rec{background:var(--rec);border-color:var(--rec)}
   .status{color:var(--dim);font-size:13px;display:flex;align-items:center;gap:8px}
+  /* 低置信标记：离线引擎质量分低于阈值时在句尾加一个小问号 */
+  .lowconf{display:inline-block;margin-left:4px;width:14px;height:14px;line-height:14px;text-align:center;
+           font-size:11px;border-radius:50%;background:#f59e0b;color:#1a1a1a;cursor:help;vertical-align:1px}
   /* 引擎选择（自动/在线/离线）：紧贴录音条右侧的小分段控件，不占上文空间 */
   .seg{display:inline-flex;align-items:center;border:1px solid var(--btn-border);border-radius:999px;
        background:var(--btn);padding:2px;gap:2px}
@@ -478,6 +481,14 @@ function render() {
     txt.className = 'txt' + (isLive ? '' : ' editable');
     txt.textContent = l.text;
     if (!isLive) txt.title = '点击修改这句（会记住你的改法，只影响你自己）';
+    // 离线引擎会给出质量分（classifier 输出）：低置信的句子标个小问号，方便判断可信度
+    if (typeof l.quality === 'number' && l.quality < 0.35) {
+      const low = document.createElement('span');
+      low.className = 'lowconf';
+      low.textContent = '?';
+      low.title = `这次识别置信度较低（质量分 ${l.quality.toFixed(3)}）——可能是说得太快、被切碎了或环境噪声大，建议核对一下`;
+      txt.appendChild(low);
+    }
     const nodes = [t, off];
     if (l.spk) {
       const spk = document.createElement('span');
@@ -750,9 +761,21 @@ async function start() {
   render();
   setStatus('请求麦克风…', 'busy');
 
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-  });
+  // 采集就采“原声”：浏览器的降噪/AGC/回声消除会改动频谱（降噪甚至会吞掉辅音、引入音乐噪声），
+  // 大模型扁得过去，本机小模型会因此重复吐字 —— ASR 场景一律关掉。
+  const audioConstraints = {
+    channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+  };
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+  } catch (err) {
+    if (err && err.name === 'OverconstrainedError') {   // 个别浏览器不支持关这些，退回最小约束
+      toast('此浏览器不支持关闭音频前处理，已按默认设置录音');
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+    } else {
+      throw err;
+    }
+  }
   audioCtx = new AudioContext({ sampleRate: 16000 });
   if (audioCtx.state === 'suspended') await audioCtx.resume();
   await audioCtx.audioWorklet.addModule('/static/worklet.js');
